@@ -1,0 +1,1154 @@
+<!DOCTYPE html>
+
+<html lang="es">
+
+<head>
+
+  <meta charset="UTF-8">
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+  <title>Tutor de Inglés MVP</title>
+
+  <!-- Tipografía de escritura a tiza (Patrick Hand, Google Fonts) -->
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+
+  <link href="https://fonts.googleapis.com/css2?family=Patrick+Hand&display=swap" rel="stylesheet">
+
+  <style>
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+
+
+    body {
+
+      font-family: 'Patrick Hand', 'Segoe UI', system-ui, sans-serif;
+
+      background: linear-gradient(160deg, #efe7db 0%, #e2d9cd 45%, #d5c9bb 100%);
+
+      height: 100vh;
+
+      height: 100dvh;
+
+      display: flex;
+
+      align-items: stretch;
+
+      justify-content: stretch;
+
+      padding: 0;
+
+      overflow: hidden;
+
+    }
+
+
+
+    /* Contenedor principal: ocupa todo el viewport (sin márgenes ni huecos),
+
+       con la barra de configuración arriba y las 2 columnas ocupando el resto */
+
+    .app {
+
+      width: 100%;
+
+      height: 100vh;
+
+      height: 100dvh;
+
+      background: linear-gradient(135deg, #9c6b33, #7a4a1f 45%, #8b5a2b 75%, #6e3f15);
+
+      padding: 10px;
+
+      display: flex;
+
+      flex-direction: column;
+
+      gap: 10px;
+
+      overflow: hidden;
+
+    }
+
+
+
+    /* Fila que contiene las dos columnas (chat + avatar) */
+
+    .columns {
+
+      display: flex;
+
+      flex-direction: row;
+
+      flex: 1;
+
+      min-height: 0;
+
+      gap: 14px;
+
+    }
+
+
+
+    /* Barra de configuración superior: nivel, test rápido y contexto */
+
+    .config-bar {
+
+      flex: none;
+
+      display: flex;
+
+      flex-wrap: wrap;
+
+      align-items: center;
+
+      gap: 10px;
+
+      padding: 10px 14px;
+
+      background: linear-gradient(180deg, #b98a4e, #9c6b33 55%, #7a4a1f);
+
+      border-bottom: 3px solid #c98a4a;
+
+      box-shadow: inset 0 -4px 8px rgba(0, 0, 0, 0.2);
+
+    }
+
+    .config-bar label {
+
+      font-size: 0.95rem;
+
+      color: #f0e6cf;
+
+    }
+
+    .config-bar select {
+
+      font-family: inherit;
+
+      font-size: 0.95rem;
+
+      color: #33302a;
+
+      background: #f7f3e6;
+
+      border: 2px solid #c9a05e;
+
+      border-radius: 999px;
+
+      padding: 6px 12px;
+
+      outline: none;
+
+      cursor: pointer;
+
+    }
+
+    .config-bar select:focus {
+
+      border-color: #e6c98a;
+
+      box-shadow: 0 0 0 3px rgba(233, 196, 138, 0.35);
+
+    }
+
+    #level-test-btn, #help-btn {
+
+      font-family: inherit;
+
+      font-size: 0.9rem;
+
+      color: #4a5a3c;
+
+      background: #f7f3e6;
+
+      border: none;
+
+      border-radius: 999px;
+
+      padding: 6px 14px;
+
+      cursor: pointer;
+
+      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+
+      transition: transform 0.15s;
+
+    }
+
+    #level-test-btn:hover, #help-btn:hover { transform: scale(1.05); }
+
+
+
+    /* Modal del test de nivel rápido */
+
+    .modal {
+
+      position: fixed;
+
+      inset: 0;
+
+      background: rgba(0, 0, 0, 0.5);
+
+      display: flex;
+
+      align-items: center;
+
+      justify-content: center;
+
+      z-index: 100;
+
+    }
+
+    .hidden { display: none !important; }
+
+    .modal-card {
+
+      width: min(520px, 92vw);
+
+      max-height: 88vh;
+
+      overflow-y: auto;
+
+      background: linear-gradient(135deg, #efe7db, #e2d9cd);
+
+      border-radius: 16px;
+
+      padding: 22px 26px;
+
+      box-shadow: 0 24px 50px rgba(0, 0, 0, 0.45);
+
+      color: #33302a;
+
+    }
+
+    .modal-card h2 {
+
+      font-size: 1.5rem;
+
+      font-weight: 400;
+
+      color: #7a4a1f;
+
+      margin-bottom: 4px;
+
+    }
+
+    .modal-card > p {
+
+      font-size: 1rem;
+
+      opacity: 0.8;
+
+      margin-bottom: 16px;
+
+    }
+
+    .test-question { margin-bottom: 18px; }
+
+    .test-question .q {
+
+      font-size: 1.1rem;
+
+      margin-bottom: 8px;
+
+      color: #5a4630;
+
+    }
+
+    .test-question label {
+
+      display: block;
+
+      font-size: 1rem;
+
+      padding: 7px 10px;
+
+      border-radius: 10px;
+
+      cursor: pointer;
+
+    }
+
+    .test-question label:hover { background: rgba(122, 74, 31, 0.12); }
+
+    .test-question input[type="radio"] {
+
+      margin-right: 8px;
+
+      accent-color: #7a4a1f;
+
+    }
+
+    .modal-actions {
+
+      display: flex;
+
+      justify-content: flex-end;
+
+      gap: 10px;
+
+      margin-top: 8px;
+
+    }
+
+    .modal-actions button {
+
+      font-family: inherit;
+
+      font-size: 1rem;
+
+      border: none;
+
+      border-radius: 999px;
+
+      padding: 8px 18px;
+
+      cursor: pointer;
+
+      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25);
+
+      transition: transform 0.15s;
+
+    }
+
+    .modal-actions button:hover { transform: scale(1.05); }
+
+    #test-cancel { background: #d9cdbf; color: #5a4630; }
+
+    #test-submit { background: #7a4a1f; color: #f7ecd8; }
+
+
+
+    /* Lista de contextos en el modal de ayuda */
+
+    .help-list {
+
+      list-style: none;
+
+      padding: 0;
+
+      margin: 0 0 14px;
+
+      display: flex;
+
+      flex-direction: column;
+
+      gap: 10px;
+
+    }
+
+    .help-list li {
+
+      display: flex;
+
+      align-items: flex-start;
+
+      gap: 12px;
+
+      background: rgba(122, 74, 31, 0.08);
+
+      border: 1px solid rgba(122, 74, 31, 0.18);
+
+      border-radius: 12px;
+
+      padding: 10px 14px;
+
+    }
+
+    .hl-emoji { font-size: 1.3rem; line-height: 1.2; flex: none; }
+
+    .help-list li strong {
+
+      display: block;
+
+      font-weight: 400;
+
+      color: #7a4a1f;
+
+      font-size: 1.1rem;
+
+      line-height: 1.2;
+
+    }
+
+    .hl-desc {
+
+      display: block;
+
+      color: #5a4630;
+
+      font-size: 0.98rem;
+
+      line-height: 1.3;
+
+      opacity: 0.92;
+
+    }
+
+
+
+    .col {
+
+      display: flex;
+
+      flex-direction: column;
+
+      min-width: 0;
+
+      border-radius: 10px;
+
+      overflow: hidden;
+
+    }
+
+
+
+    /* Columna izquierda: pizarra escolar */
+
+    .col-chat {
+
+      flex: 1 1 55%;
+
+      background:
+
+        radial-gradient(ellipse at center, rgba(255, 255, 255, 0.05), rgba(0, 0, 0, 0.22) 82%),
+
+        linear-gradient(160deg, #22452f, #1b3b2b 55%, #16301f);
+
+      box-shadow: inset 0 0 34px rgba(0, 0, 0, 0.35);
+
+    }
+
+
+
+    /* Columna derecha: pared de clase cálida */
+
+    .col-avatar {
+
+      flex: 1 1 45%;
+
+      background: linear-gradient(180deg, #efe8df 0%, #e8dfd8 55%, #ddcfc0 100%);
+
+    }
+
+
+
+    /* Encabezado escrito con tiza sobre la pizarra */
+
+    header {
+
+      background: transparent;
+
+      color: #f5f1e0;
+
+      padding: 18px 20px 8px;
+
+      text-align: center;
+
+    }
+
+    header h1 {
+
+      font-size: 1.7rem;
+
+      font-weight: 400;
+
+      letter-spacing: 1px;
+
+      text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.5);
+
+      border-bottom: 2px solid rgba(245, 241, 224, 0.35);
+
+      padding-bottom: 6px;
+
+      display: inline-block;
+
+    }
+
+    .status {
+
+      font-size: 0.85rem;
+
+      opacity: 0.9;
+
+      color: rgba(245, 241, 224, 0.85);
+
+      display: block;
+
+      margin-top: 4px;
+
+    }
+
+
+
+    /* Área del avatar a toda la altura de su columna */
+
+    .avatar-wrap {
+
+      position: relative;
+
+      flex: 1;
+
+      width: 100%;
+
+      overflow: hidden;
+
+    }
+
+    #scene-container { width: 100%; height: 100%; }
+
+
+
+    /* Suelo de clase al pie de la pared */
+
+    .classroom-floor {
+
+      flex: none;
+
+      height: 46px;
+
+      background: linear-gradient(180deg, #b98a4e, #8b5a2b 55%, #714319);
+
+      border-top: 4px solid #d9b074;
+
+      box-shadow: inset 0 8px 12px rgba(0, 0, 0, 0.28);
+
+    }
+
+
+
+    /* Etiquetas flotantes arriba, para no tapar al personaje */
+
+    .scene-label {
+
+      position: absolute;
+
+      top: 12px;
+
+      left: 14px;
+
+      background: rgba(122, 74, 31, 0.92);
+
+      color: #f7ecd8;
+
+      font-size: 0.78rem;
+
+      padding: 4px 12px;
+
+      border-radius: 999px;
+
+      letter-spacing: 0.4px;
+
+      pointer-events: none;
+
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.22);
+
+    }
+
+    .scene-hint {
+
+      position: absolute;
+
+      top: 12px;
+
+      right: 14px;
+
+      background: rgba(255, 252, 242, 0.9);
+
+      color: #7a5c33;
+
+      font-size: 0.75rem;
+
+      padding: 4px 12px;
+
+      border-radius: 999px;
+
+      letter-spacing: 0.4px;
+
+      pointer-events: none;
+
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.14);
+
+    }
+
+
+
+    /* Chat con scroll dentro de la pizarra */
+
+    #chat {
+
+      flex: 1;
+
+      min-height: 0;
+
+      overflow-y: auto;
+
+      padding: 16px 24px;
+
+      display: flex;
+
+      flex-direction: column;
+
+      gap: 12px;
+
+    }
+
+
+
+    .msg {
+
+      max-width: 92%;
+
+      padding: 10px 16px;
+
+      border-radius: 16px;
+
+      font-size: 1.12rem;
+
+      line-height: 1.35;
+
+      word-wrap: break-word;
+
+      animation: pop 0.18s ease-out;
+
+    }
+
+    /* El estudiante pega una "nota" de papel crema en la pizarra */
+
+    .msg.tu {
+
+      align-self: flex-end;
+
+      background: #f7f3e6;
+
+      color: #33302a;
+
+      border-bottom-right-radius: 4px;
+
+      box-shadow: 0 2px 5px rgba(0, 0, 0, 0.28);
+
+    }
+
+    /* El tutor "escribe con tiza" directamente en la pizarra */
+
+    .msg.tutor {
+
+      align-self: flex-start;
+
+      background: transparent;
+
+      color: #f5f1e0;
+
+      border: 1px dashed rgba(245, 241, 224, 0.4);
+
+      border-bottom-left-radius: 4px;
+
+      text-shadow: 0 1px 1px rgba(0, 0, 0, 0.35);
+
+    }
+
+    .msg.sys {
+
+      align-self: center;
+
+      background: rgba(255, 233, 168, 0.16);
+
+      color: #ffe9a8;
+
+      font-size: 0.85rem;
+
+      padding: 5px 12px;
+
+      border-radius: 999px;
+
+      border: 1px dashed rgba(255, 233, 168, 0.4);
+
+    }
+
+
+
+    /* Indicador "typing" (tres puntos animados) */
+
+    .typing-indicator {
+
+      display: flex !important;
+
+      align-items: center;
+
+      gap: 3px;
+
+      padding: 10px 16px !important;
+
+      background: transparent !important;
+
+      border: 1px dashed rgba(245, 241, 224, 0.4) !important;
+
+      border-bottom-left-radius: 4px !important;
+
+    }
+
+    .typing-indicator .dot {
+
+      width: 8px;
+
+      height: 8px;
+
+      background: rgba(245, 241, 224, 0.7);
+
+      border-radius: 50%;
+
+      animation: typing-bounce 1.2s infinite ease-in-out;
+
+    }
+
+    .typing-indicator .dot:nth-child(2) { animation-delay: 0.15s; }
+
+    .typing-indicator .dot:nth-child(3) { animation-delay: 0.3s; }
+
+    @keyframes typing-bounce {
+
+      0%, 80%, 100% { transform: translateY(0); opacity: 0.4; }
+
+      40% { transform: translateY(-6px); opacity: 1; }
+
+    }
+
+
+
+    /* Bandeja de tizas (controles integrados al pie de la pizarra) */
+
+    .controls {
+
+      padding: 12px 16px 14px;
+
+      background: linear-gradient(180deg, #a5713a, #8b5a2b 45%, #6e3f15);
+
+      border-top: 3px solid #c98a4a;
+
+      box-shadow: inset 0 4px 8px rgba(0, 0, 0, 0.3);
+
+      display: flex;
+
+      flex-direction: column;
+
+      align-items: center;
+
+      gap: 8px;
+
+    }
+
+
+
+    /* Fila de escritura: campo de texto + botón enviar */
+
+    .text-row {
+
+      width: 100%;
+
+      display: flex;
+
+      align-items: center;
+
+      gap: 8px;
+
+    }
+
+    #text-input {
+
+      flex: 1;
+
+      min-width: 0;
+
+      padding: 9px 14px;
+
+      font-family: inherit;
+
+      font-size: 1.05rem;
+
+      color: #33302a;
+
+      background: #f7f3e6;
+
+      border: 2px solid #c9a05e;
+
+      border-radius: 999px;
+
+      outline: none;
+
+    }
+
+    #text-input:focus {
+
+      border-color: #e6c98a;
+
+      box-shadow: 0 0 0 3px rgba(233, 196, 138, 0.35);
+
+    }
+
+    #text-input::placeholder { color: #a8906a; }
+
+    #send-btn {
+
+      width: 44px;
+
+      height: 44px;
+
+      flex: none;
+
+      border-radius: 50%;
+
+      border: none;
+
+      background: #f7f3e6;
+
+      color: #4a5a3c;
+
+      font-size: 1.05rem;
+
+      cursor: pointer;
+
+      box-shadow: 0 3px 8px rgba(0, 0, 0, 0.3);
+
+      transition: transform 0.15s, background 0.15s;
+
+    }
+
+    #send-btn:hover:not(:disabled) { transform: scale(1.1); }
+
+    #send-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+
+
+    .mic-row {
+
+      display: flex;
+
+      flex-direction: column;
+
+      align-items: center;
+
+      gap: 4px;
+
+    }
+
+
+
+    #speak-btn {
+
+      width: 76px;
+
+      height: 76px;
+
+      border-radius: 50%;
+
+      border: none;
+
+      background: #f7f3e6;
+
+      color: #4a5a3c;
+
+      font-size: 1.7rem;
+
+      cursor: pointer;
+
+      box-shadow: 0 5px 14px rgba(0, 0, 0, 0.4), inset 0 -2px 4px rgba(0, 0, 0, 0.15);
+
+      transition: transform 0.15s, background 0.15s;
+
+    }
+
+    #speak-btn:hover:not(:disabled) { transform: scale(1.06); }
+
+    #speak-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    #speak-btn.listening {
+
+      background: #e05656;
+
+      color: #fff;
+
+      animation: pulse 1.2s infinite;
+
+    }
+
+
+
+    #btn-label { font-size: 1rem; color: #f0e6cf; }
+
+    .hint { font-size: 0.75rem; color: rgba(240, 230, 207, 0.6); }
+
+
+
+    /* En pantallas estrechas las columnas se apilan */
+
+    @media (max-width: 760px) {
+
+      .app {
+
+        flex-direction: column;
+
+        height: 100vh;
+
+        height: 100dvh;
+
+      }
+
+      .col-avatar { order: -1; flex: none; height: 260px; }
+
+      .col-chat { flex: 1; }
+
+      .classroom-floor { height: 34px; }
+
+    }
+
+
+
+    @keyframes pulse {
+
+      0%   { box-shadow: 0 0 0 0 rgba(224, 86, 86, 0.55); }
+
+      70%  { box-shadow: 0 0 0 18px rgba(224, 86, 86, 0); }
+
+      100% { box-shadow: 0 0 0 0 rgba(224, 86, 86, 0); }
+
+    }
+
+    @keyframes pop {
+
+      from { opacity: 0; transform: translateY(6px); }
+
+      to   { opacity: 1; transform: none; }
+
+    }
+
+  </style>
+
+</head>
+
+<body>
+
+  <div class="app">
+
+    <!-- Barra de configuración superior -->
+
+    <div class="config-bar">
+
+      <label for="level-select">Nivel</label>
+
+      <select id="level-select">
+
+        <option value="">Elegir nivel…</option>
+
+        <option value="A1">A1 · Principiante</option>
+
+        <option value="A2">A2 · Básico</option>
+
+        <option value="B1">B1 · Intermedio</option>
+
+        <option value="B2">B2 · Intermedio-alto</option>
+
+      </select>
+
+      <button type="button" id="level-test-btn">¿No sé mi nivel?</button>
+
+      <label for="context-select">Contexto / Objetivo</label>
+
+      <select id="context-select">
+
+        <option value="">General</option>
+
+        <option value="conversacion_libre">Conversación libre</option>
+
+        <option value="gramatica">Gramática</option>
+
+        <option value="vocabulario">Vocabulario</option>
+
+        <option value="entrevista_trabajo">Entrevista de trabajo</option>
+
+        <option value="recepcionista_hotel">Recepcionista de hotel</option>
+
+        <option value="viajes">Viajes / turismo</option>
+
+      </select>
+
+      <button type="button" id="help-btn" title="Ver información sobre los contextos"
+
+              aria-haspopup="dialog" aria-controls="help-modal">❔ Contextos</button>
+
+    </div>
+
+
+
+    <!-- Dos columnas: chat + avatar -->
+
+    <div class="columns">
+
+      <!-- Columna izquierda: Pizarra -->
+
+      <div class="col col-chat">
+
+      <header>
+
+        <h1>🎓 Tutor de Inglés MVP</h1>
+
+        <span class="status" id="status">Conectando…</span>
+
+      </header>
+
+
+
+      <div id="chat"></div>
+
+
+
+      <div class="controls">
+
+        <div class="text-row">
+
+          <input id="text-input" type="text"
+
+                 placeholder="Escribe tu mensaje en inglés…"
+
+                 autocomplete="off" aria-label="Escribe tu mensaje">
+
+          <button id="send-btn" title="Enviar mensaje">➤</button>
+
+        </div>
+
+        <div class="mic-row">
+
+          <button id="speak-btn" title="Pulsa para hablar">🎤</button>
+
+          <span id="btn-label">Pulsa para hablar</span>
+
+        </div>
+
+        <span class="hint">El reconocimiento de voz requiere Chrome o Edge</span>
+
+      </div>
+
+    </div>
+
+
+
+    <!-- Columna derecha: Aula con el avatar -->
+
+    <div class="col col-avatar">
+
+      <div class="avatar-wrap">
+
+        <div id="scene-container"></div>
+
+        <span class="scene-label">✨ Avatar 3D</span>
+
+        <span class="scene-hint">🖱️ Arrastra para girar · Rueda para zoom</span>
+
+      </div>
+
+        <div class="classroom-floor"></div>
+
+      </div>
+
+    </div>
+
+  </div>
+
+
+
+  <!-- Modal: test de nivel rápido -->
+
+  <div id="test-modal" class="modal hidden">
+
+    <div class="modal-card">
+
+      <h2>✏️ Test de nivel rápido</h2>
+
+      <p>Responde 3 preguntas y te sugerimos tu nivel.</p>
+
+      <div id="test-questions"></div>
+
+      <div class="modal-actions">
+
+        <button type="button" id="test-cancel">Cancelar</button>
+
+        <button type="button" id="test-submit">Ver mi nivel</button>
+
+      </div>
+
+    </div>
+
+  </div>
+
+
+
+  <!-- Modal: ayuda sobre los contextos -->
+
+  <div id="help-modal" class="modal hidden" role="dialog" aria-modal="true"
+
+       aria-labelledby="help-title" aria-describedby="help-desc">
+
+    <div class="modal-card">
+
+      <h2 id="help-title">❔ Contextos disponibles</h2>
+
+      <p id="help-desc">Cada contexto adapta la conversación a un objetivo concreto:</p>
+
+      <ul class="help-list">
+
+        <li><span class="hl-emoji" aria-hidden="true">🌐</span><div><strong>General</strong><span class="hl-desc">Conversación equilibrada sin temática estricta.</span></div></li>
+
+        <li><span class="hl-emoji" aria-hidden="true">🌍</span><div><strong>Conversación libre</strong><span class="hl-desc">Charla natural y fluida sobre temas cotidianos.</span></div></li>
+
+        <li><span class="hl-emoji" aria-hidden="true">📐</span><div><strong>Gramática</strong><span class="hl-desc">Enfoque en estructura, sintaxis y tiempos verbales.</span></div></li>
+
+        <li><span class="hl-emoji" aria-hidden="true">📖</span><div><strong>Vocabulario</strong><span class="hl-desc">Ampliación con sinónimos avanzados y expresiones.</span></div></li>
+
+        <li><span class="hl-emoji" aria-hidden="true">💼</span><div><strong>Entrevista de trabajo</strong><span class="hl-desc">Role-play profesional de selección.</span></div></li>
+
+        <li><span class="hl-emoji" aria-hidden="true">🏨</span><div><strong>Recepcionista de hotel</strong><span class="hl-desc">Role-play práctico para peticiones y check-in.</span></div></li>
+
+        <li><span class="hl-emoji" aria-hidden="true">✈️</span><div><strong>Viajes / turismo</strong><span class="hl-desc">Situaciones reales como aeropuertos o restaurantes.</span></div></li>
+
+      </ul>
+
+      <div class="modal-actions">
+
+        <button type="button" id="help-close">Cerrar</button>
+
+      </div>
+
+    </div>
+
+  </div>
+
+
+
+  <!-- Three.js vía CDN (jsDelivr, gratuito) -->
+
+  <script type="importmap">
+
+  {
+
+    "imports": {
+
+      "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+
+    }
+
+  }
+
+  </script>
+
+  <script type="module" src="app.js"></script>
+
+</body>
+
+</html> 
+
