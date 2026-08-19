@@ -27,7 +27,7 @@ window.isTeacher = isTeacher;
 //
 // ⚠️ Si el frontend se aloja en GitHub Pages, sustituye este valor por la
 // URL pública real del servicio de Render (Settings → General → URL).
-const RENDER_BACKEND_URL = "https://TU-BACKEND.onrender.com";
+const RENDER_BACKEND_URL = "https://tutor-ingles-backend.onrender.com";
 
 function detectApiBaseUrl() {
   // Vía de escape para pruebas/depuración: fuerza manualmente el backend
