@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+websockets
+groq
+edge-tts
+python-multipart
+python-dotenv
+supabase
+asyncpg
+bcrypt
