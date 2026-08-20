@@ -158,6 +158,14 @@ function logout() {
   localStorage.removeItem("username");
   localStorage.removeItem("user_id");
   localStorage.removeItem("role_param");
+  // Si había una pestaña del modal abierta (#progreso, #retos, ...), se
+  // limpia el hash sin tocar el pathname antes de recargar. Así la
+  // recarga siempre respeta la subruta actual del sitio (p. ej.
+  // /profesor/frontend/ en GitHub Pages) en vez de arriesgarse a recargar
+  // una URL con una ruta absoluta que ya no existiera -> 404.
+  if (location.hash) {
+    history.replaceState(null, "", location.pathname + location.search);
+  }
   location.reload();
 }
 window.logout = logout;
@@ -1005,8 +1013,12 @@ async function loadChatHistory() {
 function showMainChatView() {
   const modal = document.getElementById("settings-modal");
   if (modal) modal.classList.add("hidden");
-  if (["/progreso", "/historial", "/ejercicios", "/profesor"].includes(location.pathname)) {
-    history.pushState({}, "", "/");
+  // Solo se limpia el hash (#progreso, #historial, ...), nunca el pathname:
+  // en GitHub Pages el sitio vive en una subcarpeta (p. ej.
+  // /profesor/frontend/) y pushState a una ruta absoluta como "/" la
+  // pierde, dejando la URL apuntando a una página inexistente (404).
+  if (["#progreso", "#historial", "#ejercicios", "#retos", "#profesor"].includes(location.hash)) {
+    history.pushState({}, "", location.pathname + location.search);
   }
 }
 
