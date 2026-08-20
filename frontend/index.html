@@ -512,11 +512,23 @@
       flex: 1;
       min-height: 0;
       overflow-y: auto;
+      scroll-behavior: smooth;
+      -webkit-overflow-scrolling: touch;
+      overscroll-behavior: contain;
+      scrollbar-width: thin;
+      scrollbar-color: rgba(245, 241, 224, 0.28) transparent;
       padding: 16px 24px;
       display: flex;
       flex-direction: column;
       gap: 12px;
     }
+    #chat::-webkit-scrollbar { width: 8px; }
+    #chat::-webkit-scrollbar-track { background: transparent; }
+    #chat::-webkit-scrollbar-thumb {
+      background: rgba(245, 241, 224, 0.28);
+      border-radius: 999px;
+    }
+    #chat::-webkit-scrollbar-thumb:hover { background: rgba(245, 241, 224, 0.45); }
 
     .msg {
       max-width: 92%;
