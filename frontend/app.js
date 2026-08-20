@@ -202,6 +202,10 @@ function fadeToAction(name, duration = 0.3) {
 }
 
 let listening = false;
+// Transcripción acumulada durante una sesión de escucha continua del
+// micrófono (ver initRecognition): se rellena mientras `listening` es
+// true y se envía entera de una vez al parar, no frase a frase.
+let voiceTranscript = "";
 let reconnectTimer = null;
 let user_id = null;
 let currentSessionId = null;
@@ -878,30 +882,47 @@ function initRecognition() {
   recognition = new SpeechRecognition();
   recognition.lang = "en-US";
   recognition.interimResults = false;
-  recognition.continuous = false;
+  // Micrófono como control manual activo/inactivo: continuous=true evita
+  // que el navegador corte la escucha por una simple pausa/silencio entre
+  // frases. Solo para de escuchar cuando el alumno vuelve a pulsar el
+  // botón (ver click handler más abajo -> recognition.stop()).
+  recognition.continuous = true;
   recognition.maxAlternatives = 1;
 
   recognition.onresult = (event) => {
-    // Solo se inserta la transcripción en el campo de texto: el alumno
-    // puede revisarla/corregirla y decide él cuándo enviarla (botón ➤ o
-    // Enter), en vez de enviarse automáticamente al dejar de hablar.
-    const transcript = event.results[0][0].transcript;
-    if (!textInput) return;
-    textInput.value = transcript;
-    textInput.focus();
-    const caretPos = textInput.value.length;
-    textInput.setSelectionRange(caretPos, caretPos);
+    // Con continuous=true, onresult puede dispararse varias veces (una
+    // por cada frase que el motor de voz da por finalizada) mientras el
+    // micrófono sigue activo. Se van acumulando esos fragmentos finales
+    // en voiceTranscript sin enviar ni tocar el chat todavía.
+    let finalChunk = "";
+    for (let i = event.resultIndex; i < event.results.length; i++) {
+      const result = event.results[i];
+      if (result.isFinal) {
+        finalChunk += result[0].transcript;
+      }
+    }
+    finalChunk = finalChunk.trim();
+    if (finalChunk) {
+      voiceTranscript = voiceTranscript ? `${voiceTranscript} ${finalChunk}` : finalChunk;
+    }
   };
 
   recognition.onend = () => {
+    // onend llega tanto al parar manualmente (recognition.stop()) como
+    // tras un error del motor de voz: en ambos casos es el punto único
+    // donde se envía, ya con todos los resultados finales entregados.
     listening = false;
     updateButton();
+    if (voiceTranscript) {
+      sendText(voiceTranscript);
+      voiceTranscript = "";
+    }
   };
 
   recognition.onerror = (event) => {
     console.error("Error de reconocimiento:", event.error);
-    listening = false;
-    updateButton();
+    // No se actualiza aquí ni el botón ni el envío: el navegador dispara
+    // "end" a continuación de "error", y onend ya se encarga de ambos.
   };
 }
 
@@ -913,6 +934,7 @@ if (speakBtn) {
       recognition.stop();
       return;
     }
+    voiceTranscript = "";
     recognition.start();
     listening = true;
     updateButton();
