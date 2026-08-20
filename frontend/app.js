@@ -65,8 +65,6 @@ const wsHost = API_BASE_URL.replace(/^https?:\/\//, "");
 const WS_URL = username ? `${wsProtocol}//${wsHost}/ws/chat?username=${encodeURIComponent(username)}` : `${wsProtocol}//${wsHost}/ws/chat`;
 
 const MODEL_URL = "./model.glb";
-const IDLE_URL = "./idle.glb";
-const TALKING_URL = "./Talking.glb";
 const MODEL_Y_ROTATION = 0;
 
 // ============================================================
@@ -178,28 +176,6 @@ if (logoutBtnEl) {
 // ---------- Estado ----------
 let socket = null;
 let recognition = null;
-let mixer = null;
-const clock = new THREE.Clock();
-
-let actions = {};
-let activeAction = null;
-
-function fadeToAction(name, duration = 0.3) {
-  const previousAction = activeAction;
-  activeAction = actions[name];
-
-  if (!activeAction || previousAction === activeAction) return;
-
-  activeAction.reset();
-  activeAction.setEffectiveWeight(1);
-  activeAction.enabled = true;
-
-  if (previousAction) {
-    activeAction.crossFadeFrom(previousAction, duration, true);
-  }
-
-  activeAction.play();
-}
 
 let listening = false;
 // Transcripción acumulada durante una sesión de escucha continua del
@@ -240,7 +216,6 @@ const newChatBtn = document.getElementById("new-chat-btn");
 let renderer, scene, camera, controls;
 let avatarPivot = null;
 let avatarRoot = null;
-let headBone = null;
 let mouthMorphs = [];
 let shadowPlane = null;
 let audioContext = null;
@@ -370,20 +345,13 @@ async function loadModel() {
   try {
     const gltf = await loader.loadAsync(MODEL_URL);
     avatarRoot = gltf.scene;
+    // Rotación fija, sin animación de cuerpo (Mixamo): el avatar se queda
+    // completamente estático y formal, tipo busto de telediario. Solo se
+    // mueven las blendshapes de la boca (ver updateMouth/setupMouthMorphs).
     avatarRoot.rotation.y = MODEL_Y_ROTATION;
     avatarPivot.add(avatarRoot);
     centerAndScale(avatarRoot);
-    setupAnimationTargets(avatarRoot);
-
-    const [idleGltf, talkGltf] = await Promise.all([
-      loader.loadAsync(IDLE_URL),
-      loader.loadAsync(TALKING_URL),
-    ]);
-
-    mixer = new THREE.AnimationMixer(avatarRoot);
-    if (idleGltf.animations.length > 0) actions.idle = mixer.clipAction(idleGltf.animations[0]);
-    if (talkGltf.animations.length > 0) actions.talking = mixer.clipAction(talkGltf.animations[0]);
-    if (actions.idle) fadeToAction("idle", 0.1);
+    setupMouthMorphs(avatarRoot);
 
     addSystem("✓ Avatar 3D listo. Pulsa 🎤 para hablar.");
   } catch (err) {
@@ -415,11 +383,8 @@ function centerAndScale(root) {
   shadowPlane.position.set(0, 0.02, 0);
 }
 
-function setupAnimationTargets(root) {
+function setupMouthMorphs(root) {
   root.traverse((obj) => {
-    if (obj.isBone && /head/i.test(obj.name) && !headBone) {
-      headBone = obj;
-    }
     if (obj.isMesh && obj.morphTargetDictionary) {
       const dict = obj.morphTargetDictionary;
       Object.keys(dict).forEach((name) => {
@@ -458,27 +423,10 @@ function getVolume() {
 function animate() {
   requestAnimationFrame(animate);
 
-  if (mixer) {
-    const delta = clock.getDelta();
-    mixer.update(delta);
-  }
-
-  const t = performance.now() * 0.001;
-  const vol = getVolume();
-  const isTalking = activeAction === actions.talking;
-
+  // Cuerpo y cabeza completamente estáticos (busto de telediario): lo
+  // único que se anima es la boca, vía blendshapes, en updateMouth().
   if (avatarRoot) {
-    updateMouth(vol);
-
-    avatarPivot.position.y = Math.sin(t * 1.8) * 0.025;
-    avatarRoot.rotation.y = MODEL_Y_ROTATION + Math.sin(t * 0.8) * 0.03;
-
-    if (headBone && !isTalking) {
-      headBone.rotation.x = Math.sin(t * 2.1) * 0.04 - vol * 0.09;
-      headBone.rotation.z = Math.sin(t * 1.2) * 0.03;
-    } else if (!headBone) {
-      avatarRoot.rotation.x = Math.sin(t * 2.1) * 0.02 - vol * 0.05;
-    }
+    updateMouth(getVolume());
   }
 
   if (controls) controls.update();
@@ -556,19 +504,17 @@ function playAudio(base64) {
   if (!base64) return;
   const audio = new Audio("data:audio/mpeg;base64," + base64);
 
-  fadeToAction('talking', 0.2);
-
+  // No hay animación de cuerpo que arrancar/parar: la boca se anima sola
+  // en cuanto el analizador detecta volumen (ver animate/updateMouth).
   audio.onended = () => {
     analyser = null;
     analyserData = null;
-    fadeToAction('idle', 0.3);
   };
-  
+
   audio.onerror = () => {
     console.error("Error al reproducir audio");
     analyser = null;
     analyserData = null;
-    fadeToAction('idle', 0.3);
   };
 
   connectAnalyser(audio);
@@ -576,7 +522,6 @@ function playAudio(base64) {
     console.error("Error al reproducir audio:", err);
     analyser = null;
     analyserData = null;
-    fadeToAction('idle', 0.3);
   });
 }
 
@@ -1742,9 +1687,6 @@ if (username) {
   connect();
   initRecognition();
 }
-
-window.fadeToAction = fadeToAction;
-window.actions = actions;
 
 // Al final de index.js
 window.loadChatHistory = loadChatHistory;
