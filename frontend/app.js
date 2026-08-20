@@ -53,6 +53,12 @@ const API_BASE_URL = detectApiBaseUrl();
 function apiUrl(path) {
   return `${API_BASE_URL}${path}`;
 }
+// Expuesto en window para que el <script> inline de index.html (no es un
+// módulo, así que no puede hacer `import`/`export` con este archivo) pueda
+// construir rutas de API con la misma URL base de Render, en vez de hacer
+// fetch a rutas relativas como '/api/progress' (que en GitHub Pages
+// resuelven contra el propio dominio de GitHub Pages y devuelven 404).
+window.apiUrl = apiUrl;
 
 const wsProtocol = API_BASE_URL.startsWith("https:") ? "wss:" : "ws:";
 const wsHost = API_BASE_URL.replace(/^https?:\/\//, "");

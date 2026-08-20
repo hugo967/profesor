@@ -1188,7 +1188,12 @@
     async function apiFetch(path) {
       const userId = window.currentUserId;
       if (!userId) throw new Error('Usuario no identificado todavía');
-      const res = await fetch(path, { headers: { 'X-User-Id': userId } });
+      // window.apiUrl (definido en app.js) resuelve contra la URL base real
+      // del backend (Render), no contra el origen de este documento. Sin
+      // esto, en GitHub Pages una ruta relativa como '/api/progress'
+      // acababa pidiéndose al propio dominio de GitHub Pages -> 404.
+      const url = typeof window.apiUrl === 'function' ? window.apiUrl(path) : path;
+      const res = await fetch(url, { headers: { 'X-User-Id': userId } });
       if (!res.ok) throw new Error(`Error ${res.status} en ${path}`);
       return res.json();
     }
