@@ -695,7 +695,10 @@
       }
       .config-row {
         display: flex;
-        align-items: center;
+        /* flex-end en vez de center: el botón de ayuda se alinea con el
+           <select> (abajo de la fila), ignorando la altura del <label>
+           que va encima dentro de .field-group. */
+        align-items: flex-end;
         justify-content: space-between;
         width: 100%;
         gap: 8px;
