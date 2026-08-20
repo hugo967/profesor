@@ -249,6 +249,36 @@ let analyserData = null;
 
 const MOUTH_MORPH_RE = /^(jawOpen|mouthOpen|mouthSmile|mouthFunnel|viseme)/;
 
+// Altura fija a la que se escala siempre el avatar (ver centerAndScale).
+const AVATAR_HEIGHT = 1.8;
+
+// Mismo breakpoint que el CSS responsive (@media max-width: 768px, ver
+// index.html): en móvil el hueco vertical para el avatar es muy reducido,
+// así que ahí conviene un plano medio-corto de pecho hacia arriba (estilo
+// presentador de telediario); en escritorio se mantiene el plano general
+// de cuerpo entero original.
+const mobileMediaQuery = window.matchMedia("(max-width: 768px)");
+
+function applyCameraFraming() {
+  if (!camera || !controls) return;
+  const mobile = mobileMediaQuery.matches;
+  const heightRatio = mobile ? 0.78 : 0.5;
+  const distance = mobile ? 0.95 : 2.5;
+  const height = AVATAR_HEIGHT * heightRatio;
+
+  camera.position.set(0, height, distance);
+  camera.fov = 45;
+  camera.updateProjectionMatrix();
+  controls.target.set(0, height, 0);
+  controls.minDistance = mobile ? 0.6 : 1.5;
+  controls.maxDistance = mobile ? 4 : 8;
+  controls.update();
+}
+// Reencuadra si el usuario cruza el breakpoint (p. ej. gira el móvil o
+// redimensiona la ventana en escritorio) en vez de quedarse con el
+// encuadre del tamaño con el que cargó la página.
+mobileMediaQuery.addEventListener("change", applyCameraFraming);
+
 function initScene() {
   if (!sceneContainer) return;
   renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
@@ -259,7 +289,6 @@ function initScene() {
 
   scene = new THREE.Scene();
   camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100);
-  camera.position.set(0, 1.8 * 0.9, 1.0);
 
   scene.add(new THREE.AmbientLight(0xffffff, 0.65));
 
@@ -309,11 +338,11 @@ function initScene() {
   controls.enableDamping = true;
   controls.dampingFactor = 0.08;
   controls.enablePan = false;
-  controls.minDistance = 1.9;
-  controls.maxDistance = 7;
-  controls.target.set(0, 1.55, 0);
-  controls.minDistance = 0.6;
-  controls.maxDistance = 3;
+
+  // Encuadre provisional (antes de conocer la altura real del modelo tras
+  // cargarlo); centerAndScale() lo recalcula con precisión en cuanto se
+  // conoce la altura real del avatar.
+  applyCameraFraming();
 
   resizeScene();
   if ("ResizeObserver" in window) {
@@ -374,22 +403,14 @@ function centerAndScale(root) {
     return;
   }
 
-  const targetHeight = 1.8;
-  const scale = targetHeight / size.y;
+  const scale = AVATAR_HEIGHT / size.y;
   root.scale.setScalar(scale);
 
   root.updateMatrixWorld(true);
   const finalBox = new THREE.Box3().setFromObject(root);
   root.position.set(0, -finalBox.min.y, 0);
 
-  const midHeight = targetHeight * 0.5;
-  camera.position.set(0, midHeight, 2.5);
-  camera.fov = 45;
-  camera.updateProjectionMatrix();
-  controls.target.set(0, midHeight, 0);
-  controls.minDistance = 1.5;
-  controls.maxDistance = 8;
-  controls.update();
+  applyCameraFraming();
 
   shadowPlane.position.set(0, 0.02, 0);
 }
