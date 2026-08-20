@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import json
+import logging
 import os
 import pathlib
 import re
@@ -43,6 +44,16 @@ from db import (
     update_user_level,
 )
 from security import hash_password, verify_password
+
+# Logging detallado: Render captura stdout/stderr como consola del servicio,
+# así que basta con configurar el logger raíz para que cualquier
+# logger.exception(...) imprima ahí el traceback completo del error real
+# (no solo el mensaje genérico que ve el alumno en el chat).
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+logger = logging.getLogger("tutor_ingles")
 
 # Inicialización de la aplicación FastAPI
 app = FastAPI(title="Tutor de Inglés MVP")
@@ -332,7 +343,18 @@ async def websocket_chat(websocket: WebSocket):
                 if session_id != requested_session_id:
                     await websocket.send_json({"type": "session", "session_id": session_id})
 
-                await save_chat_message(session_id, "user", user_message)
+                try:
+                    await save_chat_message(session_id, "user", user_message)
+                except Exception:
+                    # No bloquea la conversación por un fallo puntual de
+                    # Supabase (p. ej. RLS, columna inexistente, red): el
+                    # alumno sigue recibiendo respuesta del tutor, solo que
+                    # ese turno no queda guardado en el historial.
+                    logger.exception(
+                        "Fallo guardando mensaje de usuario en Supabase "
+                        "(user_id=%s, session_id=%s)",
+                        user_id, session_id,
+                    )
 
             messages.append({"role": "user", "content": user_message})
 
@@ -345,8 +367,17 @@ async def websocket_chat(websocket: WebSocket):
 
             try:
                 tutor_text = await get_ai_response(messages)
-            except Exception as e:
-                print(f"Error en Groq/AI: {e}")
+            except Exception:
+                # Traceback completo + contexto en la consola de Render:
+                # aquí es donde aparece la causa real del error genérico
+                # que ve el alumno (p. ej. GROQ_API_KEY inválida/caducada,
+                # modelo GROQ_MODEL descontinuado por Groq, rate limit,
+                # timeout de red, etc.).
+                logger.exception(
+                    "Fallo llamando a Groq (modelo=%s, user_id=%s, "
+                    "session_id=%s, num_mensajes=%d, conexiones_activas=%d)",
+                    GROQ_MODEL, user_id, session_id, len(messages), active_connections_count,
+                )
                 await websocket.send_json({
                     "type": "error",
                     "message": "Error generando respuesta. Inténtalo de nuevo."
@@ -363,20 +394,39 @@ async def websocket_chat(websocket: WebSocket):
 
             try:
                 audio_base64 = await text_to_speech_base64(tutor_text)
-            except Exception as e:
-                print(f"Error en TTS: {e}")
+            except Exception:
+                # edge-tts depende de un servicio externo de Microsoft: si
+                # falla (voz TTS_VOICE inválida, timeout, bloqueo de red en
+                # el host de Render, etc.) se sigue enviando el texto de la
+                # respuesta sin audio en vez de romper la conversación.
+                logger.exception(
+                    "Fallo generando audio TTS (voz=%s, user_id=%s, "
+                    "session_id=%s, longitud_texto=%d)",
+                    TTS_VOICE, user_id, session_id, len(tutor_text),
+                )
                 audio_base64 = ""
 
             if not is_exercise_message:
-                await save_chat_message(session_id, "assistant", tutor_text, audio_base64)
+                try:
+                    await save_chat_message(session_id, "assistant", tutor_text, audio_base64)
+                except Exception:
+                    logger.exception(
+                        "Fallo guardando respuesta del tutor en Supabase "
+                        "(user_id=%s, session_id=%s)",
+                        user_id, session_id,
+                    )
 
             try:
                 await websocket.send_json({
                     "text": tutor_text,
                     "audio_base64": audio_base64,
                 })
-            except Exception as e:
-                print(f"Error enviando respuesta: {e}")
+            except Exception:
+                logger.exception(
+                    "Fallo enviando respuesta por WebSocket (user_id=%s, "
+                    "session_id=%s)",
+                    user_id, session_id,
+                )
                 if session_id:
                     await end_chat_session(session_id)
                 return
@@ -395,9 +445,13 @@ async def websocket_chat(websocket: WebSocket):
                         "status": "completed",
                         "attempts": progress.get("attempts", 0) + 1,
                     })
-                except Exception as e:
+                except Exception:
                     progress_saved = False
-                    print(f"Error actualizando progreso del reto: {e}")
+                    logger.exception(
+                        "Fallo actualizando progreso del reto en Supabase "
+                        "(user_id=%s, exercise_id=%s)",
+                        user_id, completed_exercise["id"],
+                    )
 
                 active_exercise = None
                 messages[0] = {
@@ -412,13 +466,24 @@ async def websocket_chat(websocket: WebSocket):
                         "title": completed_exercise.get("title", ""),
                         "saved": progress_saved,
                     })
-                except Exception as e:
-                    print(f"Error enviando aviso de reto completado: {e}")
+                except Exception:
+                    logger.exception(
+                        "Fallo enviando aviso de reto completado por WebSocket "
+                        "(user_id=%s, exercise_id=%s)",
+                        user_id, completed_exercise["id"],
+                    )
     except WebSocketDisconnect:
         if session_id:
             await end_chat_session(session_id)
-    except Exception as e:
-        print(f"Error en WebSocket: {e}")
+    except Exception:
+        # Cualquier fallo no controlado explícitamente arriba (p. ej. en
+        # create_chat_session/get_chat_session/update_user_level) acaba
+        # aquí: se registra el traceback completo para poder diagnosticarlo
+        # desde la consola de Render en vez de solo ver que el WS se cerró.
+        logger.exception(
+            "Error no controlado en WebSocket (user_id=%s, session_id=%s)",
+            user_id, session_id,
+        )
         if session_id:
             await end_chat_session(session_id)
     finally:
