@@ -227,32 +227,27 @@ const MOUTH_MORPH_RE = /^(jawOpen|mouthOpen|mouthSmile|mouthFunnel|viseme)/;
 // Altura fija a la que se escala siempre el avatar (ver centerAndScale).
 const AVATAR_HEIGHT = 1.8;
 
-// Mismo breakpoint que el CSS responsive (@media max-width: 768px, ver
-// index.html): en móvil el hueco vertical para el avatar es muy reducido,
-// así que ahí conviene un plano medio-corto de pecho hacia arriba (estilo
-// presentador de telediario); en escritorio se mantiene el plano general
-// de cuerpo entero original.
-const mobileMediaQuery = window.matchMedia("(max-width: 768px)");
+// Plano medio/busto (de pecho hacia arriba, estilo presentador de
+// telediario): SIEMPRE el mismo encuadre, tanto en escritorio como en
+// móvil. No depende del tamaño de pantalla ni se debe alternar nunca a
+// plano de cuerpo entero.
+const CHEST_HEIGHT_RATIO = 0.78;
+const CAMERA_DISTANCE = 0.95;
 
 function applyCameraFraming() {
   if (!camera || !controls) return;
-  const mobile = mobileMediaQuery.matches;
-  const heightRatio = mobile ? 0.78 : 0.5;
-  const distance = mobile ? 0.95 : 2.5;
-  const height = AVATAR_HEIGHT * heightRatio;
+  const height = AVATAR_HEIGHT * CHEST_HEIGHT_RATIO;
 
-  camera.position.set(0, height, distance);
+  camera.position.set(0, height, CAMERA_DISTANCE);
   camera.fov = 45;
   camera.updateProjectionMatrix();
   controls.target.set(0, height, 0);
-  controls.minDistance = mobile ? 0.6 : 1.5;
-  controls.maxDistance = mobile ? 4 : 8;
+  // Rango de zoom deliberadamente corto: incluso al máximo alejamiento
+  // (maxDistance) no debe llegar a revelar el cuerpo entero.
+  controls.minDistance = 0.55;
+  controls.maxDistance = 1.3;
   controls.update();
 }
-// Reencuadra si el usuario cruza el breakpoint (p. ej. gira el móvil o
-// redimensiona la ventana en escritorio) en vez de quedarse con el
-// encuadre del tamaño con el que cargó la página.
-mobileMediaQuery.addEventListener("change", applyCameraFraming);
 
 function initScene() {
   if (!sceneContainer) return;
