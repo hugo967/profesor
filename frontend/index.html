@@ -54,6 +54,13 @@
       border-bottom: 3px solid #c98a4a;
       box-shadow: inset 0 -4px 8px rgba(0, 0, 0, 0.2);
     }
+    /* En escritorio estos agrupadores son invisibles para el layout: sus
+       hijos (label/select/botón) pasan a ser hijos flex directos de
+       .config-bar, igual que en el markup plano original. Solo se
+       activan como filas reales dentro de la media query móvil. */
+    .config-row, .config-actions, .field-group {
+      display: contents;
+    }
     .config-bar label {
       font-size: 0.95rem;
       color: #f0e6cf;
@@ -675,8 +682,51 @@
 
       .classroom-floor { height: 26px; }
 
-      .config-bar { padding: 8px 10px; gap: 6px; }
-      .config-bar label { font-size: 0.8rem; }
+      /* Barra de configuración: 3 filas limpias en vertical en vez del
+         flex-wrap "suelto" de escritorio.
+         Fila 1: selector de Nivel + botón de ayuda de nivel.
+         Fila 2: selector de Contexto + botón de ayuda de contextos.
+         Fila 3: barra de acciones (Ajustes + Cerrar sesión) al 100%. */
+      .config-bar {
+        flex-direction: column;
+        align-items: stretch;
+        padding: 8px 10px;
+        gap: 6px;
+      }
+      .config-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        width: 100%;
+        gap: 8px;
+      }
+      /* El selector (con su etiqueta encima) ocupa todo el espacio
+         disponible de la fila; el botón de ayuda queda a la derecha. */
+      .field-group {
+        display: flex;
+        flex-direction: column;
+        flex: 1;
+        min-width: 0;
+        gap: 2px;
+      }
+      .field-group label { font-size: 0.72rem; }
+      .field-group select { width: 100%; }
+      #level-test-btn, #help-btn { flex: none; white-space: nowrap; }
+
+      .config-actions {
+        display: flex;
+        width: 100%;
+        gap: 8px;
+      }
+      .config-actions button {
+        flex: 1;
+        text-align: center;
+      }
+      /* En escritorio #settings-btn usa margin-left:auto para irse a la
+         derecha del flex-wrap; en esta fila de 2 botones al 100% ya no
+         hace falta (y rompería el reparto 50/50). */
+      .config-actions #settings-btn { margin-left: 0; }
+
       .config-bar select,
       #level-test-btn, #help-btn, #new-chat-btn, #settings-btn, #logout-btn {
         font-size: 0.8rem;
@@ -838,31 +888,47 @@
 
   <div class="app">
 
-    <!-- Barra de configuración superior -->
+    <!-- Barra de configuración superior.
+         Se agrupa en "filas" (config-row / config-actions / field-group)
+         que en escritorio son `display: contents` -> invisibles para el
+         layout, así que .config-bar sigue viendo exactamente los mismos
+         hijos flex en el mismo orden que antes y el diseño de escritorio
+         no cambia. Solo en la media query móvil (<=768px) esas filas se
+         convierten en filas reales apiladas. -->
     <div class="config-bar">
-      <label for="level-select">Nivel</label>
-      <select id="level-select">
-        <option value="">Elegir nivel…</option>
-        <option value="A1">A1 · Principiante</option>
-        <option value="A2">A2 · Básico</option>
-        <option value="B1">B1 · Intermedio</option>
-        <option value="B2">B2 · Intermedio-alto</option>
-      </select>
-      <button type="button" id="level-test-btn">¿No sé mi nivel?</button>
-      <label for="context-select">Contexto / Objetivo</label>
-      <select id="context-select">
-        <option value="">General</option>
-        <option value="conversacion_libre">Conversación libre</option>
-        <option value="gramatica">Gramática</option>
-        <option value="vocabulario">Vocabulario</option>
-        <option value="entrevista_trabajo">Entrevista de trabajo</option>
-        <option value="recepcionista_hotel">Recepcionista de hotel</option>
-        <option value="viajes">Viajes / turismo</option>
-      </select>
-      <button type="button" id="help-btn" title="Ver información sobre los contextos"
-              aria-haspopup="dialog" aria-controls="help-modal">❔ Contextos</button>
-      <button type="button" id="settings-btn" title="Configuración" aria-haspopup="dialog" aria-controls="settings-modal">⚙️</button>
-      <button type="button" id="logout-btn" title="Cerrar sesión">🚪 Cerrar sesión</button>
+      <div class="config-row">
+        <div class="field-group">
+          <label for="level-select">Nivel</label>
+          <select id="level-select">
+            <option value="">Elegir nivel…</option>
+            <option value="A1">A1 · Principiante</option>
+            <option value="A2">A2 · Básico</option>
+            <option value="B1">B1 · Intermedio</option>
+            <option value="B2">B2 · Intermedio-alto</option>
+          </select>
+        </div>
+        <button type="button" id="level-test-btn">¿No sé mi nivel?</button>
+      </div>
+      <div class="config-row">
+        <div class="field-group">
+          <label for="context-select">Contexto / Objetivo</label>
+          <select id="context-select">
+            <option value="">General</option>
+            <option value="conversacion_libre">Conversación libre</option>
+            <option value="gramatica">Gramática</option>
+            <option value="vocabulario">Vocabulario</option>
+            <option value="entrevista_trabajo">Entrevista de trabajo</option>
+            <option value="recepcionista_hotel">Recepcionista de hotel</option>
+            <option value="viajes">Viajes / turismo</option>
+          </select>
+        </div>
+        <button type="button" id="help-btn" title="Ver información sobre los contextos"
+                aria-haspopup="dialog" aria-controls="help-modal">❔ Contextos</button>
+      </div>
+      <div class="config-actions">
+        <button type="button" id="settings-btn" title="Configuración" aria-haspopup="dialog" aria-controls="settings-modal">⚙️</button>
+        <button type="button" id="logout-btn" title="Cerrar sesión">🚪 Cerrar sesión</button>
+      </div>
     </div>
 
     <!-- Dos columnas: chat + avatar -->
