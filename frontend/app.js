@@ -882,7 +882,15 @@ function initRecognition() {
   recognition.maxAlternatives = 1;
 
   recognition.onresult = (event) => {
-    sendText(event.results[0][0].transcript);
+    // Solo se inserta la transcripción en el campo de texto: el alumno
+    // puede revisarla/corregirla y decide él cuándo enviarla (botón ➤ o
+    // Enter), en vez de enviarse automáticamente al dejar de hablar.
+    const transcript = event.results[0][0].transcript;
+    if (!textInput) return;
+    textInput.value = transcript;
+    textInput.focus();
+    const caretPos = textInput.value.length;
+    textInput.setSelectionRange(caretPos, caretPos);
   };
 
   recognition.onend = () => {
