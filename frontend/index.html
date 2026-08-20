@@ -1097,13 +1097,20 @@
     const settingsModal = document.getElementById('settings-modal');
     const settingsClose = document.getElementById('settings-close');
 
-    // Mapa ruta URL <-> id de pestaña
+    // Mapa ruta URL <-> id de pestaña.
+    // Se usa el HASH (#progreso, #retos, ...) en vez de una ruta absoluta
+    // de pathname (/progreso, /retos, ...): GitHub Pages sirve este sitio
+    // desde una subcarpeta del repo (p. ej. /profesor/frontend/) y no tiene
+    // enrutado del lado servidor, así que pushState a un pathname absoluto
+    // "pierde" esa subcarpeta y un recargo/enlace directo a esa URL da 404.
+    // El hash, en cambio, nunca se envía al servidor: siempre resuelve
+    // sobre la URL actual, respetando la subcarpeta.
     const ROUTE_TO_TAB = {
-      '/progreso': 'tab-progreso',
-      '/historial': 'tab-history',
-      '/ejercicios': 'tab-ejercicios',
-      '/retos': 'tab-retos',
-      '/profesor': 'tab-profesor',
+      '#progreso': 'tab-progreso',
+      '#historial': 'tab-history',
+      '#ejercicios': 'tab-ejercicios',
+      '#retos': 'tab-retos',
+      '#profesor': 'tab-profesor',
     };
     const TAB_TO_ROUTE = Object.fromEntries(
       Object.entries(ROUTE_TO_TAB).map(([route, tab]) => [tab, route])
@@ -1134,7 +1141,9 @@
       const resolvedTabId = resolveTabId(tabId);
       settingsModal.classList.remove('hidden');
       activateTab(resolvedTabId);
-      const route = TAB_TO_ROUTE[resolvedTabId] || '/progreso';
+      const route = TAB_TO_ROUTE[resolvedTabId] || '#progreso';
+      // Solo se toca el hash: pushState con una URL relativa que empieza
+      // por "#" mantiene intactos pathname y search (la subcarpeta actual).
       if (push) {
         history.pushState({ tabId: resolvedTabId }, '', route);
       } else if (resolvedTabId !== tabId) {
@@ -1144,8 +1153,10 @@
 
     function closeModal({ push = true } = {}) {
       settingsModal.classList.add('hidden');
-      if (push && Object.keys(ROUTE_TO_TAB).includes(location.pathname)) {
-        history.pushState({}, '', '/');
+      if (push && Object.keys(ROUTE_TO_TAB).includes(location.hash)) {
+        // Limpia solo el hash, respetando la ruta base actual (p. ej.
+        // /profesor/frontend/) en vez de saltar a "/" y perderla.
+        history.pushState({}, '', location.pathname + location.search);
       }
     }
 
@@ -1166,21 +1177,21 @@
 
     // Atrás/adelante del navegador
     window.addEventListener('popstate', () => {
-      const routeTabId = ROUTE_TO_TAB[location.pathname];
+      const routeTabId = ROUTE_TO_TAB[location.hash];
       if (routeTabId) {
         const resolvedTabId = resolveTabId(routeTabId);
         settingsModal.classList.remove('hidden');
         activateTab(resolvedTabId);
         if (resolvedTabId !== routeTabId) {
-          history.replaceState({ tabId: resolvedTabId }, '', TAB_TO_ROUTE[resolvedTabId] || '/progreso');
+          history.replaceState({ tabId: resolvedTabId }, '', TAB_TO_ROUTE[resolvedTabId] || '#progreso');
         }
       } else {
         settingsModal.classList.add('hidden');
       }
     });
 
-    // Al cargar la página: si la URL ya es /progreso, /historial, etc., abre esa pestaña
-    const initialTab = ROUTE_TO_TAB[location.pathname];
+    // Al cargar la página: si la URL ya trae #progreso, #historial, etc., abre esa pestaña
+    const initialTab = ROUTE_TO_TAB[location.hash];
     if (initialTab) {
       openTab(initialTab, { push: false });
     }
