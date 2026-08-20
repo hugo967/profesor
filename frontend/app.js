@@ -65,6 +65,11 @@ const wsHost = API_BASE_URL.replace(/^https?:\/\//, "");
 const WS_URL = username ? `${wsProtocol}//${wsHost}/ws/chat?username=${encodeURIComponent(username)}` : `${wsProtocol}//${wsHost}/ws/chat`;
 
 const MODEL_URL = "./model.glb";
+// Usado solo una vez, al cargar, para "hornear" una pose de reposo natural
+// (brazos caídos) sobre el esqueleto — ver applyStaticRestPose(). Nunca se
+// reproduce como animación: sin esto el modelo se queda en la T-pose de
+// bind del esqueleto, que no es una postura formal.
+const IDLE_URL = "./idle.glb";
 const MODEL_Y_ROTATION = 0;
 
 // ============================================================
@@ -347,11 +352,38 @@ async function loadModel() {
     avatarPivot.add(avatarRoot);
     centerAndScale(avatarRoot);
     setupMouthMorphs(avatarRoot);
+    await applyStaticRestPose(avatarRoot);
 
     addSystem("✓ Avatar 3D listo. Pulsa 🎤 para hablar.");
   } catch (err) {
     console.error("Error cargando el modelo 3D:", err);
     addSystem("⚠️ Error: " + err.message);
+  }
+}
+
+// Sin ninguna animación reproduciéndose, el esqueleto se queda en su
+// T-pose de bind (brazos totalmente extendidos), que no es una postura
+// formal. Para evitarlo se aplica UNA sola vez el punto medio del ciclo
+// del clip de idle de Mixamo (pose de reposo, brazos caídos) directamente
+// sobre los huesos, y se abandona el mixer sin volver a actualizarlo: el
+// cuerpo queda fijo en esa pose para siempre, sin que se reproduzca
+// ninguna animación.
+//
+// Importante: NUNCA se llama a poseMixer.stop()/stopAllAction() ni a
+// uncacheRoot() — ambos hacen que three.js restaure los bindings a su
+// valor ORIGINAL (la T-pose), deshaciendo la pose recién aplicada. El
+// mixer simplemente se deja de usar (no vuelve a haber más update()).
+async function applyStaticRestPose(root) {
+  try {
+    const idleGltf = await new GLTFLoader().loadAsync(IDLE_URL);
+    const clip = idleGltf.animations[0];
+    if (!clip) return;
+
+    const poseMixer = new THREE.AnimationMixer(root);
+    poseMixer.clipAction(clip).play();
+    poseMixer.update(clip.duration * 0.5);
+  } catch (err) {
+    console.warn("No se pudo aplicar la pose de reposo del avatar:", err);
   }
 }
 
