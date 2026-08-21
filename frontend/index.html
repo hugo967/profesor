@@ -471,7 +471,13 @@
       width: 100%;
       overflow: hidden;
     }
-    #scene-container { width: 100%; height: 100%; }
+    #avatar-container {
+      width: 100%;
+      height: 100%;
+      display: block;
+      object-fit: contain;
+      object-position: center bottom;
+    }
 
     .classroom-floor {
       flex: none;
@@ -493,19 +499,6 @@
       letter-spacing: 0.4px;
       pointer-events: none;
       box-shadow: 0 2px 8px rgba(0, 0, 0, 0.22);
-    }
-    .scene-hint {
-      position: absolute;
-      top: 12px;
-      right: 14px;
-      background: rgba(255, 252, 242, 0.9);
-      color: #7a5c33;
-      font-size: 0.75rem;
-      padding: 4px 12px;
-      border-radius: 999px;
-      letter-spacing: 0.4px;
-      pointer-events: none;
-      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.14);
     }
 
     #chat {
@@ -778,8 +771,7 @@
       #btn-label { font-size: 0.85rem; }
       .hint { font-size: 0.68rem; text-align: center; }
 
-      .scene-label, .scene-hint { font-size: 0.68rem; padding: 3px 9px; }
-      .scene-hint { display: none; } /* gesto táctil ya es intuitivo; ahorra espacio */
+      .scene-label { font-size: 0.68rem; padding: 3px 9px; }
 
       .modal-card { padding: 16px 18px; width: min(520px, 94vw); }
       #settings-modal .modal-card:has(#tab-profesor.active) { width: 98vw; height: 94vh; }
@@ -980,9 +972,8 @@
       <!-- Columna derecha: Aula con el avatar -->
       <div class="col col-avatar">
         <div class="avatar-wrap">
-          <div id="scene-container"></div>
-          <span class="scene-label">✨ Avatar 3D</span>
-          <span class="scene-hint">🖱️ Arrastra para girar · Rueda para zoom</span>
+          <img id="avatar-container" src="./avatar_cerrado.png" alt="Avatar del tutor">
+          <span class="scene-label">🗣️ Avatar</span>
         </div>
         <div class="classroom-floor"></div>
       </div>
@@ -1358,15 +1349,6 @@
   <!-- Chart.js vía CDN (jsDelivr, gratuito) -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
-  <!-- Three.js vía CDN (jsDelivr, gratuito) -->
-  <script type="importmap">
-  {
-    "imports": {
-      "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
-      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
-    }
-  }
-  </script>
   <script type="module" src="app.js"></script>
 
 </body>
