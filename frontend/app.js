@@ -320,6 +320,13 @@ function connectAnalyser(audio) {
 
 function playAudio(base64) {
   if (!base64) return;
+  // El AnalyserNode depende de audioContext, que hasta ahora solo se
+  // creaba al pulsar el micrófono (ver speak-btn). Si el alumno solo
+  // escribe por texto, audioContext nunca existía y connectAnalyser()
+  // se cortaba en seco (analyser quedaba null): el audio sonaba igual
+  // (el <audio> no depende del Web Audio API para reproducirse) pero
+  // getVolume() siempre devolvía 0 y la boca no se movía nunca.
+  ensureAudioContext();
   const audio = new Audio("data:audio/mpeg;base64," + base64);
 
   // No hay animación de cuerpo que arrancar/parar: la boca se anima sola
