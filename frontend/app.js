@@ -1,10 +1,5 @@
 // Tutor de Inglés MVP — lógica del frontend
 
-import * as THREE from "three";
-import { OrbitControls } from "three/addons/controls/OrbitControls.js";
-import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
-import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
-
 // ---------- Configuración ----------
 // Sesión leída EXCLUSIVAMENTE de localStorage, rellenada por el login real
 // (usuario + contraseña) en POST /api/auth/login — ver más abajo. No se lee
@@ -63,14 +58,6 @@ window.apiUrl = apiUrl;
 const wsProtocol = API_BASE_URL.startsWith("https:") ? "wss:" : "ws:";
 const wsHost = API_BASE_URL.replace(/^https?:\/\//, "");
 const WS_URL = username ? `${wsProtocol}//${wsHost}/ws/chat?username=${encodeURIComponent(username)}` : `${wsProtocol}//${wsHost}/ws/chat`;
-
-const MODEL_URL = "./model.glb";
-// Usado solo una vez, al cargar, para "hornear" una pose de reposo natural
-// (brazos caídos) sobre el esqueleto — ver applyStaticRestPose(). Nunca se
-// reproduce como animación: sin esto el modelo se queda en la T-pose de
-// bind del esqueleto, que no es una postura formal.
-const IDLE_URL = "./idle.glb";
-const MODEL_Y_ROTATION = 0;
 
 // ============================================================
 // Login por usuario y contraseña (sin autorregistro)
@@ -200,7 +187,7 @@ const chatEl = document.getElementById("chat");
 const statusEl = document.getElementById("status");
 const speakBtn = document.getElementById("speak-btn");
 const btnLabel = document.getElementById("btn-label");
-const sceneContainer = document.getElementById("scene-container");
+const avatarContainer = document.getElementById("avatar-container");
 const textInput = document.getElementById("text-input");
 const sendBtn = document.getElementById("send-btn");
 const levelSelect = document.getElementById("level-select");
@@ -216,224 +203,36 @@ const helpCloseBtn = document.getElementById("help-close");
 const newChatBtn = document.getElementById("new-chat-btn");
 
 // ============================================================
-// Avatar 3D
+// Avatar 2D (Talking Head por imágenes)
 // ============================================================
-let renderer, scene, camera, controls;
-let avatarPivot = null;
-let avatarRoot = null;
-let mouthMorphs = [];
-let shadowPlane = null;
 let audioContext = null;
 let analyser = null;
 let analyserData = null;
 
-const MOUTH_MORPH_RE = /^(jawOpen|mouthOpen|mouthSmile|mouthFunnel|viseme)/;
+// Umbrales de volumen (0–1, salida de getVolume()) que determinan qué
+// imagen de boca se muestra.
+const MOUTH_CLOSED_THRESHOLD = 0.05;
+const MOUTH_MID_THRESHOLD = 0.15;
 
-// Altura fija a la que se escala siempre el avatar (ver centerAndScale).
-const AVATAR_HEIGHT = 1.8;
+const AVATAR_IMAGES = {
+  closed: "./avatar_cerrado.png",
+  mid: "./avatar_medio.png",
+  open: "./avatar_abierto.png",
+};
 
-// Plano medio/busto (de pecho hacia arriba, estilo presentador de
-// telediario): SIEMPRE el mismo encuadre, tanto en escritorio como en
-// móvil. No depende del tamaño de pantalla ni se debe alternar nunca a
-// plano de cuerpo entero.
-const CHEST_HEIGHT_RATIO = 0.78;
-const CAMERA_DISTANCE = 0.95;
+let currentAvatarState = "closed";
 
-function applyCameraFraming() {
-  if (!camera || !controls) return;
-  const height = AVATAR_HEIGHT * CHEST_HEIGHT_RATIO;
-
-  camera.position.set(0, height, CAMERA_DISTANCE);
-  camera.fov = 45;
-  camera.updateProjectionMatrix();
-  controls.target.set(0, height, 0);
-  // Rango de zoom deliberadamente corto: incluso al máximo alejamiento
-  // (maxDistance) no debe llegar a revelar el cuerpo entero.
-  controls.minDistance = 0.55;
-  controls.maxDistance = 1.3;
-  controls.update();
-}
-
-function initScene() {
-  if (!sceneContainer) return;
-  renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-  renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.0;
-  sceneContainer.appendChild(renderer.domElement);
-
-  scene = new THREE.Scene();
-  camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100);
-
-  scene.add(new THREE.AmbientLight(0xffffff, 0.65));
-
-  const keyLight = new THREE.DirectionalLight(0xffe6c4, 1.5);
-  keyLight.position.set(2.5, 3.5, 4);
-  scene.add(keyLight);
-
-  const fillLight = new THREE.DirectionalLight(0xe3d2bb, 0.6);
-  fillLight.position.set(-3.5, 1.2, 2);
-  scene.add(fillLight);
-
-  const rimLight = new THREE.DirectionalLight(0xfff4e6, 0.4);
-  rimLight.position.set(0, 1.5, -3);
-  scene.add(rimLight);
-
-  try {
-    const pmrem = new THREE.PMREMGenerator(renderer);
-    scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
-  } catch (e) {
-    console.warn("Sin entorno PBR, usando solo luces:", e);
-  }
-
-  const shadowCanvas = document.createElement("canvas");
-  shadowCanvas.width = shadowCanvas.height = 256;
-  const ctx = shadowCanvas.getContext("2d");
-  const grad = ctx.createRadialGradient(128, 128, 12, 128, 128, 122);
-  grad.addColorStop(0, "rgba(0,0,0,0.28)");
-  grad.addColorStop(1, "rgba(0,0,0,0)");
-  ctx.fillStyle = grad;
-  ctx.fillRect(0, 0, 256, 256);
-
-  shadowPlane = new THREE.Mesh(
-    new THREE.PlaneGeometry(1.7, 1.7),
-    new THREE.MeshBasicMaterial({
-      map: new THREE.CanvasTexture(shadowCanvas),
-      transparent: true,
-      depthWrite: false,
-    })
-  );
-  shadowPlane.rotation.x = -Math.PI / 2;
-
-  avatarPivot = new THREE.Group();
-  avatarPivot.add(shadowPlane);
-  scene.add(avatarPivot);
-
-  controls = new OrbitControls(camera, renderer.domElement);
-  controls.enableDamping = true;
-  controls.dampingFactor = 0.08;
-  controls.enablePan = false;
-
-  // Encuadre provisional (antes de conocer la altura real del modelo tras
-  // cargarlo); centerAndScale() lo recalcula con precisión en cuanto se
-  // conoce la altura real del avatar.
-  applyCameraFraming();
-
-  resizeScene();
-  if ("ResizeObserver" in window) {
-    new ResizeObserver(resizeScene).observe(sceneContainer);
-  } else {
-    window.addEventListener("resize", resizeScene);
-  }
-
-  loadModel();
-}
-
-function resizeScene() {
-  if (!sceneContainer || !renderer || !camera) return;
-  const w = sceneContainer.clientWidth;
-  const h = sceneContainer.clientHeight;
-  renderer.setSize(w, h);
-  camera.aspect = w / h;
-  camera.updateProjectionMatrix();
-}
-
-async function loadModel() {
-  addSystem("⏳ Cargando avatar 3D…");
-  const loader = new GLTFLoader();
-
-  try {
-    const gltf = await loader.loadAsync(MODEL_URL);
-    avatarRoot = gltf.scene;
-    // Rotación fija, sin animación de cuerpo (Mixamo): el avatar se queda
-    // completamente estático y formal, tipo busto de telediario. Solo se
-    // mueven las blendshapes de la boca (ver updateMouth/setupMouthMorphs).
-    avatarRoot.rotation.y = MODEL_Y_ROTATION;
-    avatarPivot.add(avatarRoot);
-    centerAndScale(avatarRoot);
-    setupMouthMorphs(avatarRoot);
-    await applyStaticRestPose(avatarRoot);
-
-    addSystem("✓ Avatar 3D listo. Pulsa 🎤 para hablar.");
-  } catch (err) {
-    console.error("Error cargando el modelo 3D:", err);
-    addSystem("⚠️ Error: " + err.message);
-  }
-}
-
-// Sin ninguna animación reproduciéndose, el esqueleto se queda en su
-// T-pose de bind (brazos totalmente extendidos), que no es una postura
-// formal. Para evitarlo se aplica UNA sola vez el punto medio del ciclo
-// del clip de idle de Mixamo (pose de reposo, brazos caídos) directamente
-// sobre los huesos, y se abandona el mixer sin volver a actualizarlo: el
-// cuerpo queda fijo en esa pose para siempre, sin que se reproduzca
-// ninguna animación.
-//
-// Importante: NUNCA se llama a poseMixer.stop()/stopAllAction() ni a
-// uncacheRoot() — ambos hacen que three.js restaure los bindings a su
-// valor ORIGINAL (la T-pose), deshaciendo la pose recién aplicada. El
-// mixer simplemente se deja de usar (no vuelve a haber más update()).
-async function applyStaticRestPose(root) {
-  try {
-    const idleGltf = await new GLTFLoader().loadAsync(IDLE_URL);
-    const clip = idleGltf.animations[0];
-    if (!clip) return;
-
-    const poseMixer = new THREE.AnimationMixer(root);
-    poseMixer.clipAction(clip).play();
-    poseMixer.update(clip.duration * 0.5);
-  } catch (err) {
-    console.warn("No se pudo aplicar la pose de reposo del avatar:", err);
-  }
-}
-
-function centerAndScale(root) {
-  root.updateMatrixWorld(true);
-
-  const box = new THREE.Box3().setFromObject(root);
-  const size = box.getSize(new THREE.Vector3());
-
-  if (!isFinite(size.y) || size.y <= 0) {
-    addSystem("⚠️ Bounding box vacío o inválido");
-    return;
-  }
-
-  const scale = AVATAR_HEIGHT / size.y;
-  root.scale.setScalar(scale);
-
-  root.updateMatrixWorld(true);
-  const finalBox = new THREE.Box3().setFromObject(root);
-  root.position.set(0, -finalBox.min.y, 0);
-
-  applyCameraFraming();
-
-  shadowPlane.position.set(0, 0.02, 0);
-}
-
-function setupMouthMorphs(root) {
-  root.traverse((obj) => {
-    if (obj.isMesh && obj.morphTargetDictionary) {
-      const dict = obj.morphTargetDictionary;
-      Object.keys(dict).forEach((name) => {
-        if (MOUTH_MORPH_RE.test(name)) {
-          mouthMorphs.push({ mesh: obj, index: dict[name], name });
-        }
-      });
-    }
-  });
+function mouthStateForVolume(vol) {
+  if (vol < MOUTH_CLOSED_THRESHOLD) return "closed";
+  if (vol < MOUTH_MID_THRESHOLD) return "mid";
+  return "open";
 }
 
 function updateMouth(vol) {
-  const target = Math.min(1, vol * 1.3);
-  for (const m of mouthMorphs) {
-    let weight = target * 0.5;
-    if (m.name === "jawOpen") weight = target * 0.9;
-    else if (m.name === "mouthOpen") weight = target * 0.7;
-    else if (m.name.startsWith("viseme")) weight = target * 0.8;
-    else if (m.name.startsWith("mouthSmile")) weight = 0.12 + target * 0.25;
-    m.mesh.morphTargetInfluences[m.index] +=
-      (weight - m.mesh.morphTargetInfluences[m.index]) * 0.3;
-  }
+  const state = mouthStateForVolume(vol);
+  if (state === currentAvatarState) return;
+  currentAvatarState = state;
+  if (avatarContainer) avatarContainer.src = AVATAR_IMAGES[state];
 }
 
 function getVolume() {
@@ -449,15 +248,7 @@ function getVolume() {
 
 function animate() {
   requestAnimationFrame(animate);
-
-  // Cuerpo y cabeza completamente estáticos (busto de telediario): lo
-  // único que se anima es la boca, vía blendshapes, en updateMouth().
-  if (avatarRoot) {
-    updateMouth(getVolume());
-  }
-
-  if (controls) controls.update();
-  if (renderer && scene && camera) renderer.render(scene, camera);
+  updateMouth(getVolume());
 }
 
 // ============================================================
@@ -1703,14 +1494,7 @@ window.closeTeacherHistoryView = closeTeacherHistoryView;
 // Sin sesión guardada en localStorage (sin login real hecho) no se arranca
 // nada: se deja la pantalla de login visible y ya está.
 if (username) {
-  try {
-    initScene();
-    animate();
-  } catch (e) {
-    console.error("No se pudo iniciar el avatar 3D:", e);
-    addSystem("⚠️ No se pudo iniciar el avatar 3D (¿WebGL desactivado?)");
-  }
-
+  animate();
   connect();
   initRecognition();
 }
