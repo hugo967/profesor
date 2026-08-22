@@ -209,7 +209,7 @@ const newChatBtn = document.getElementById("new-chat-btn");
 // Ligeramente por debajo de 1.0: a velocidad normal los gestos del vídeo
 // se veían demasiado rápidos/nerviosos: se ven más naturales y pausados
 // un poco ralentizados.
-const AVATAR_VIDEO_PLAYBACK_RATE = 0.7;
+const AVATAR_VIDEO_PLAYBACK_RATE = 0.6;
 if (avatarTalkingEl) avatarTalkingEl.playbackRate = AVATAR_VIDEO_PLAYBACK_RATE;
 
 // Volumen (0-1, salida de getAudioVolume()) por debajo del cual se
@@ -221,10 +221,13 @@ const AVATAR_SILENCE_THRESHOLD = 0.05;
 
 let avatarSpeaking = false;
 
-// Cambia el elemento visible (vídeo/imagen). No reinicia el vídeo a 0 en
-// cada transición: al ser un bucle genérico de "hablar" (no un lipsync
-// exacto por fonema), continuar desde donde iba es más natural que saltar
-// cada vez que el volumen sube tras una micropausa entre palabras.
+// Cambia el elemento visible (vídeo/imagen) SIN tocar nunca currentTime:
+// al detectar silencio, avatarTalkingEl.pause() lo deja congelado en el
+// fotograma exacto en el que estaba; al retomar la voz, play() continúa
+// desde ahí. Así, aunque la profesora haga varias pausas al hablar, se ve
+// como una única toma continua en vez de un vídeo que se reinicia cada
+// vez. El único sitio que reinicia currentTime a 0 es el "ended" del
+// audio (ver playAudio), que marca el final real de la frase.
 function setAvatarSpeaking(speaking) {
   if (speaking === avatarSpeaking) return;
   avatarSpeaking = speaking;
@@ -376,6 +379,7 @@ function playAudio(base64) {
 
   if (currentAvatarAudio) {
     currentAvatarAudio.onpause = null;
+    currentAvatarAudio.onended = null;
     currentAvatarAudio.onerror = null;
     currentAvatarAudio.pause();
   }
@@ -394,6 +398,15 @@ function playAudio(base64) {
     if (currentAvatarAudio === audio) currentAvatarAudio = null;
   };
   audio.onpause = backToIdle;
+  // "ended" (fin real de la frase, nunca una simple pausa por silencio o
+  // por interrupción) es el único momento en el que el vídeo se rebobina:
+  // así la siguiente vez que hable arranca limpio desde el principio en
+  // vez de seguir donde se quedó una respuesta anterior. "pause" ya se ha
+  // encargado de ocultar el vídeo justo antes (el navegador siempre
+  // dispara "pause" antes de "ended").
+  audio.onended = () => {
+    if (avatarTalkingEl) avatarTalkingEl.currentTime = 0;
+  };
   audio.onerror = () => {
     console.error("Error al reproducir audio");
     backToIdle();
