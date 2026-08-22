@@ -187,7 +187,8 @@ const chatEl = document.getElementById("chat");
 const statusEl = document.getElementById("status");
 const speakBtn = document.getElementById("speak-btn");
 const btnLabel = document.getElementById("btn-label");
-const avatarContainer = document.getElementById("avatar-container");
+const avatarIdleEl = document.getElementById("avatar-idle");
+const avatarTalkingEl = document.getElementById("avatar-talking");
 const textInput = document.getElementById("text-input");
 const sendBtn = document.getElementById("send-btn");
 const levelSelect = document.getElementById("level-select");
@@ -203,52 +204,23 @@ const helpCloseBtn = document.getElementById("help-close");
 const newChatBtn = document.getElementById("new-chat-btn");
 
 // ============================================================
-// Avatar 2D (Talking Head por imágenes)
+// Avatar 2D (imagen fija en reposo / vídeo en bucle al hablar)
 // ============================================================
-let audioContext = null;
-let analyser = null;
-let analyserData = null;
-
-// Umbrales de volumen (0–1, salida de getVolume()) que determinan qué
-// imagen de boca se muestra.
-const MOUTH_CLOSED_THRESHOLD = 0.05;
-const MOUTH_MID_THRESHOLD = 0.15;
-
-const AVATAR_IMAGES = {
-  closed: "./avatar_cerrado.png",
-  mid: "./avatar_medio.png",
-  open: "./avatar_abierto.png",
-};
-
-let currentAvatarState = "closed";
-
-function mouthStateForVolume(vol) {
-  if (vol < MOUTH_CLOSED_THRESHOLD) return "closed";
-  if (vol < MOUTH_MID_THRESHOLD) return "mid";
-  return "open";
-}
-
-function updateMouth(vol) {
-  const state = mouthStateForVolume(vol);
-  if (state === currentAvatarState) return;
-  currentAvatarState = state;
-  if (avatarContainer) avatarContainer.src = AVATAR_IMAGES[state];
-}
-
-function getVolume() {
-  if (!analyser || !analyserData) return 0;
-  analyser.getByteTimeDomainData(analyserData);
-  let sum = 0;
-  for (let i = 0; i < analyserData.length; i++) {
-    const v = (analyserData[i] - 128) / 128;
-    sum += v * v;
+function showTalkingAvatar() {
+  if (avatarIdleEl) avatarIdleEl.classList.add("hidden");
+  if (avatarTalkingEl) {
+    avatarTalkingEl.classList.remove("hidden");
+    avatarTalkingEl.currentTime = 0;
+    avatarTalkingEl.play().catch((err) => console.error("No se pudo reproducir el vídeo del avatar:", err));
   }
-  return Math.min(1, Math.sqrt(sum / analyserData.length) * 2.4);
 }
 
-function animate() {
-  requestAnimationFrame(animate);
-  updateMouth(getVolume());
+function showIdleAvatar() {
+  if (avatarTalkingEl) {
+    avatarTalkingEl.pause();
+    avatarTalkingEl.classList.add("hidden");
+  }
+  if (avatarIdleEl) avatarIdleEl.classList.remove("hidden");
 }
 
 // ============================================================
@@ -293,60 +265,20 @@ function hideTypingIndicator() {
 // ============================================================
 // Audio
 // ============================================================
-function ensureAudioContext() {
-  if (!audioContext) {
-    const AC = window.AudioContext || window.webkitAudioContext;
-    if (AC) audioContext = new AC();
-  }
-  if (audioContext && audioContext.state === "suspended") {
-    audioContext.resume();
-  }
-}
-
-function connectAnalyser(audio) {
-  try {
-    if (!audioContext) return;
-    const source = audioContext.createMediaElementSource(audio);
-    analyser = audioContext.createAnalyser();
-    analyser.fftSize = 256;
-    analyserData = new Uint8Array(analyser.fftSize);
-    source.connect(analyser);
-    analyser.connect(audioContext.destination);
-  } catch (e) {
-    console.error("No se pudo analizar el audio:", e);
-    analyser = null;
-  }
-}
-
 function playAudio(base64) {
   if (!base64) return;
-  // El AnalyserNode depende de audioContext, que hasta ahora solo se
-  // creaba al pulsar el micrófono (ver speak-btn). Si el alumno solo
-  // escribe por texto, audioContext nunca existía y connectAnalyser()
-  // se cortaba en seco (analyser quedaba null): el audio sonaba igual
-  // (el <audio> no depende del Web Audio API para reproducirse) pero
-  // getVolume() siempre devolvía 0 y la boca no se movía nunca.
-  ensureAudioContext();
   const audio = new Audio("data:audio/mpeg;base64," + base64);
 
-  // No hay animación de cuerpo que arrancar/parar: la boca se anima sola
-  // en cuanto el analizador detecta volumen (ver animate/updateMouth).
-  audio.onended = () => {
-    analyser = null;
-    analyserData = null;
-  };
-
+  audio.onended = showIdleAvatar;
   audio.onerror = () => {
     console.error("Error al reproducir audio");
-    analyser = null;
-    analyserData = null;
+    showIdleAvatar();
   };
 
-  connectAnalyser(audio);
+  showTalkingAvatar();
   audio.play().catch((err) => {
     console.error("Error al reproducir audio:", err);
-    analyser = null;
-    analyserData = null;
+    showIdleAvatar();
   });
 }
 
@@ -719,7 +651,6 @@ function initRecognition() {
 
 if (speakBtn) {
   speakBtn.addEventListener("click", () => {
-    ensureAudioContext();
     if (!recognition) return;
     if (listening) {
       recognition.stop();
@@ -1501,7 +1432,6 @@ window.closeTeacherHistoryView = closeTeacherHistoryView;
 // Sin sesión guardada en localStorage (sin login real hecho) no se arranca
 // nada: se deja la pantalla de login visible y ya está.
 if (username) {
-  animate();
   connect();
   initRecognition();
 }
