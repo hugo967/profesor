@@ -206,11 +206,18 @@ const newChatBtn = document.getElementById("new-chat-btn");
 // ============================================================
 // Avatar 2D (imagen fija en reposo / vídeo en bucle al hablar)
 // ============================================================
+// Ligeramente por debajo de 1.0: a velocidad normal los gestos del vídeo
+// se veían demasiado rápidos/nerviosos: se ven más naturales y pausados
+// un poco ralentizados.
+const AVATAR_VIDEO_PLAYBACK_RATE = 0.9;
+if (avatarTalkingEl) avatarTalkingEl.playbackRate = AVATAR_VIDEO_PLAYBACK_RATE;
+
 function showTalkingAvatar() {
   if (avatarIdleEl) avatarIdleEl.classList.add("hidden");
   if (avatarTalkingEl) {
     avatarTalkingEl.classList.remove("hidden");
     avatarTalkingEl.currentTime = 0;
+    avatarTalkingEl.playbackRate = AVATAR_VIDEO_PLAYBACK_RATE;
     avatarTalkingEl.play().catch((err) => console.error("No se pudo reproducir el vídeo del avatar:", err));
   }
 }
