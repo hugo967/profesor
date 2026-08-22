@@ -694,6 +694,16 @@ if (newChatBtn) {
     }
 
     if (chatEl) chatEl.innerHTML = "";
+
+    // Resetea el selector de Contexto/Objetivo a "General" (valor
+    // vacío): un chat nuevo no debe quedarse bloqueado en el modo del
+    // chat anterior, para poder elegir uno limpio. Se reenvía la config
+    // al backend para que su estado interno (current_context) quede
+    // sincronizado con lo que ahora muestra el desplegable.
+    if (contextSelect) contextSelect.value = "";
+    currentConfig.context = "";
+    sendConfig();
+
     addSystem("Nueva conversación. Escribe o habla para empezar.");
     showMainChatView();
   });
@@ -985,6 +995,15 @@ async function loadSpecificSession(sessionId) {
 
     currentSessionId = sessionId;
     window.currentSessionId = sessionId;
+
+    // Al cambiar a otra conversación no se conoce (desde aquí) el modo
+    // con el que se dio originalmente, así que el desplegable de
+    // Contexto/Objetivo se resetea a "General" en vez de dejarlo
+    // mostrando el modo de la conversación anterior. No se reenvía la
+    // config al backend: retomar un chat pasado no debe disparar un
+    // tema proactivo nuevo encima de la conversación ya existente.
+    if (contextSelect) contextSelect.value = "";
+    currentConfig.context = "";
 
     if (chatEl) {
       chatEl.innerHTML = "";
