@@ -209,7 +209,7 @@ const newChatBtn = document.getElementById("new-chat-btn");
 // Ligeramente por debajo de 1.0: a velocidad normal los gestos del vídeo
 // se veían demasiado rápidos/nerviosos: se ven más naturales y pausados
 // un poco ralentizados.
-const AVATAR_VIDEO_PLAYBACK_RATE = 0.9;
+const AVATAR_VIDEO_PLAYBACK_RATE = 0.7;
 if (avatarTalkingEl) avatarTalkingEl.playbackRate = AVATAR_VIDEO_PLAYBACK_RATE;
 
 function showTalkingAvatar() {
@@ -272,20 +272,47 @@ function hideTypingIndicator() {
 // ============================================================
 // Audio
 // ============================================================
+// Audio de TTS actualmente en curso: solo sus eventos pueden controlar el
+// avatar. Si llega un mensaje nuevo antes de que el anterior termine, se
+// descarta el audio viejo (y se le quitan los listeners) para que su
+// "pause" no interfiera con el estado del avatar del audio nuevo.
+let currentAvatarAudio = null;
+
 function playAudio(base64) {
   if (!base64) return;
-  const audio = new Audio("data:audio/mpeg;base64," + base64);
 
-  audio.onended = showIdleAvatar;
+  if (currentAvatarAudio) {
+    currentAvatarAudio.onplaying = null;
+    currentAvatarAudio.onpause = null;
+    currentAvatarAudio.onerror = null;
+    currentAvatarAudio.pause();
+  }
+
+  const audio = new Audio("data:audio/mpeg;base64," + base64);
+  currentAvatarAudio = audio;
+
+  // El vídeo solo arranca cuando el audio empieza a sonar de verdad, no
+  // al llamar a play() (que puede demorarse por buffering o políticas de
+  // autoplay): "playing" es el evento que marca ese instante exacto.
+  audio.onplaying = () => showTalkingAvatar();
+
+  // "pause" cubre tanto el final natural (el navegador siempre dispara
+  // "pause" justo antes de "ended") como cualquier corte prematuro: en
+  // cualquier caso, vuelta inmediata a la imagen fija. No se deja vídeo
+  // de "hablando" activo sin audio sonando.
+  const backToIdle = () => {
+    showIdleAvatar();
+    if (currentAvatarAudio === audio) currentAvatarAudio = null;
+  };
+  audio.onpause = backToIdle;
   audio.onerror = () => {
     console.error("Error al reproducir audio");
-    showIdleAvatar();
+    backToIdle();
   };
 
-  showTalkingAvatar();
   audio.play().catch((err) => {
     console.error("Error al reproducir audio:", err);
-    showIdleAvatar();
+    backToIdle();
   });
 }
 
