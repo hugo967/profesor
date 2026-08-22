@@ -212,22 +212,115 @@ const newChatBtn = document.getElementById("new-chat-btn");
 const AVATAR_VIDEO_PLAYBACK_RATE = 0.7;
 if (avatarTalkingEl) avatarTalkingEl.playbackRate = AVATAR_VIDEO_PLAYBACK_RATE;
 
-function showTalkingAvatar() {
-  if (avatarIdleEl) avatarIdleEl.classList.add("hidden");
-  if (avatarTalkingEl) {
-    avatarTalkingEl.classList.remove("hidden");
-    avatarTalkingEl.currentTime = 0;
-    avatarTalkingEl.playbackRate = AVATAR_VIDEO_PLAYBACK_RATE;
-    avatarTalkingEl.play().catch((err) => console.error("No se pudo reproducir el vídeo del avatar:", err));
+// Volumen (0-1, salida de getAudioVolume()) por debajo del cual se
+// considera que la profesora no está vocalizando en ese instante —
+// pausas y silencios dentro del propio audio, aunque el <audio> siga
+// técnicamente en reproducción. Mismo umbral ya calibrado antes para
+// distinguir "boca cerrada" del volumen real de la voz.
+const AVATAR_SILENCE_THRESHOLD = 0.05;
+
+let avatarSpeaking = false;
+
+// Cambia el elemento visible (vídeo/imagen). No reinicia el vídeo a 0 en
+// cada transición: al ser un bucle genérico de "hablar" (no un lipsync
+// exacto por fonema), continuar desde donde iba es más natural que saltar
+// cada vez que el volumen sube tras una micropausa entre palabras.
+function setAvatarSpeaking(speaking) {
+  if (speaking === avatarSpeaking) return;
+  avatarSpeaking = speaking;
+  if (speaking) {
+    if (avatarIdleEl) avatarIdleEl.classList.add("hidden");
+    if (avatarTalkingEl) {
+      avatarTalkingEl.classList.remove("hidden");
+      avatarTalkingEl.playbackRate = AVATAR_VIDEO_PLAYBACK_RATE;
+      avatarTalkingEl.play().catch((err) => console.error("No se pudo reproducir el vídeo del avatar:", err));
+    }
+  } else {
+    if (avatarTalkingEl) {
+      avatarTalkingEl.pause();
+      avatarTalkingEl.classList.add("hidden");
+    }
+    if (avatarIdleEl) avatarIdleEl.classList.remove("hidden");
   }
 }
 
-function showIdleAvatar() {
-  if (avatarTalkingEl) {
-    avatarTalkingEl.pause();
-    avatarTalkingEl.classList.add("hidden");
+// ---- Web Audio API: mide el volumen real del audio en reproducción ----
+let audioContext = null;
+let analyser = null;
+let analyserData = null;
+let volumeMonitorHandle = null;
+
+function ensureAudioContext() {
+  if (!audioContext) {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (AC) audioContext = new AC();
   }
-  if (avatarIdleEl) avatarIdleEl.classList.remove("hidden");
+  if (audioContext && audioContext.state === "suspended") {
+    audioContext.resume();
+  }
+  return audioContext;
+}
+
+function getAudioVolume() {
+  if (!analyser || !analyserData) return 0;
+  analyser.getByteTimeDomainData(analyserData);
+  let sum = 0;
+  for (let i = 0; i < analyserData.length; i++) {
+    const v = (analyserData[i] - 128) / 128;
+    sum += v * v;
+  }
+  return Math.min(1, Math.sqrt(sum / analyserData.length) * 2.4);
+}
+
+// Conecta un <audio> concreto al analizador. Solo se puede llamar una vez
+// por elemento (createMediaElementSource lanza si se repite), pero
+// playAudio() crea un Audio() nuevo en cada mensaje, así que nunca se
+// reutiliza. Hay que reconectar el analyser a destination explícitamente:
+// en cuanto el audio pasa por el grafo de Web Audio, deja de sonar por su
+// cuenta si no se enruta de nuevo hasta la salida.
+function connectAnalyser(audio) {
+  const ctx = ensureAudioContext();
+  if (!ctx) return false;
+  try {
+    const source = ctx.createMediaElementSource(audio);
+    analyser = ctx.createAnalyser();
+    analyser.fftSize = 256;
+    analyserData = new Uint8Array(analyser.fftSize);
+    source.connect(analyser);
+    analyser.connect(ctx.destination);
+    return true;
+  } catch (e) {
+    console.error("No se pudo analizar el audio:", e);
+    analyser = null;
+    analyserData = null;
+    return false;
+  }
+}
+
+// Un tick por frame (~16 ms a 60 Hz) es de sobra para que el avatar
+// reaccione "al instante" a la forma de onda real, sin necesidad de un
+// setInterval aparte.
+function monitorVolume() {
+  setAvatarSpeaking(getAudioVolume() >= AVATAR_SILENCE_THRESHOLD);
+  volumeMonitorHandle = requestAnimationFrame(monitorVolume);
+}
+
+function startVolumeMonitor() {
+  if (volumeMonitorHandle) return;
+  monitorVolume();
+}
+
+// forceIdle=false se usa solo al interrumpir un audio con uno nuevo: corta
+// la monitorización del audio viejo sin forzar la imagen fija, para que si
+// el nuevo audio ya está hablando no haya un parpadeo de por medio.
+function stopVolumeMonitor({ forceIdle = true } = {}) {
+  if (volumeMonitorHandle) {
+    cancelAnimationFrame(volumeMonitorHandle);
+    volumeMonitorHandle = null;
+  }
+  analyser = null;
+  analyserData = null;
+  if (forceIdle) setAvatarSpeaking(false);
 }
 
 // ============================================================
@@ -282,26 +375,22 @@ function playAudio(base64) {
   if (!base64) return;
 
   if (currentAvatarAudio) {
-    currentAvatarAudio.onplaying = null;
     currentAvatarAudio.onpause = null;
     currentAvatarAudio.onerror = null;
     currentAvatarAudio.pause();
   }
+  // No fuerza la imagen fija aquí: si el audio nuevo ya trae voz, el
+  // propio monitor de volumen del audio nuevo lo detectará enseguida.
+  stopVolumeMonitor({ forceIdle: false });
 
   const audio = new Audio("data:audio/mpeg;base64," + base64);
   currentAvatarAudio = audio;
 
-  // El vídeo solo arranca cuando el audio empieza a sonar de verdad, no
-  // al llamar a play() (que puede demorarse por buffering o políticas de
-  // autoplay): "playing" es el evento que marca ese instante exacto.
-  audio.onplaying = () => showTalkingAvatar();
-
   // "pause" cubre tanto el final natural (el navegador siempre dispara
   // "pause" justo antes de "ended") como cualquier corte prematuro: en
-  // cualquier caso, vuelta inmediata a la imagen fija. No se deja vídeo
-  // de "hablando" activo sin audio sonando.
+  // cualquier caso, vuelta inmediata e imperceptible a la imagen fija.
   const backToIdle = () => {
-    showIdleAvatar();
+    stopVolumeMonitor();
     if (currentAvatarAudio === audio) currentAvatarAudio = null;
   };
   audio.onpause = backToIdle;
@@ -309,6 +398,17 @@ function playAudio(base64) {
     console.error("Error al reproducir audio");
     backToIdle();
   };
+
+  // Mientras haya analizador, es el volumen real (ver monitorVolume) el
+  // que decide, frame a frame, si se ve el vídeo o la imagen fija — no el
+  // simple hecho de que el <audio> esté en estado "playing". Sin Web
+  // Audio disponible (navegador muy antiguo o API bloqueada), se cae al
+  // comportamiento anterior: vídeo mientras el audio esté sonando.
+  if (connectAnalyser(audio)) {
+    startVolumeMonitor();
+  } else {
+    audio.onplaying = () => setAvatarSpeaking(true);
+  }
 
   audio.play().catch((err) => {
     console.error("Error al reproducir audio:", err);
@@ -685,6 +785,10 @@ function initRecognition() {
 
 if (speakBtn) {
   speakBtn.addEventListener("click", () => {
+    // Pulsar el micro es un gesto de usuario: aprovecha para arrancar/
+    // reanudar el AudioContext cuanto antes, así ya está listo cuando
+    // llegue el audio TTS de la respuesta.
+    ensureAudioContext();
     if (!recognition) return;
     if (listening) {
       recognition.stop();
