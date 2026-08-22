@@ -470,13 +470,55 @@
       flex: 1;
       width: 100%;
       overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      /* Crea un contexto de apilamiento propio: así los z-index de sus
+         hijos (fondo, avatar, etiqueta) no interfieren con el resto de
+         la página. */
+      isolation: isolate;
     }
+
+    /* Fondo sutil y difuminado detrás del avatar. Si ./aula.jpg no existe
+       (404), esta capa no pinta nada y simplemente se ve el degradado
+       marrón/crema de .col-avatar, que ya sirve de fondo neutro. El
+       recuadro se agranda un poco más allá de .avatar-wrap (inset
+       negativo) para que el desenfoque no deje ver un borde nítido. */
+    .avatar-wrap::before {
+      content: "";
+      position: absolute;
+      inset: -12%;
+      background-image: url("./aula.jpg");
+      background-size: cover;
+      background-position: center;
+      filter: blur(10px) brightness(0.92);
+      z-index: 0;
+    }
+
     .avatar-media {
-      width: 100%;
-      height: 100%;
+      position: relative;
+      z-index: 1;
+      /* callado.png/hablando.mp4 tienen mucho margen de croma verde a los
+         lados del busto (el sujeto real ocupa ~37% del ancho pero ~96%
+         del alto del fotograma). Fijar esta proporción + object-fit:cover
+         hace que el recuadro del avatar se ajuste al busto en vez de al
+         fotograma completo (que dejaría casi todo hueco tras quitar el
+         verde), y cover recorta el sobrante lateral (ya transparente)
+         sin recortar cabeza ni hombros. */
+      aspect-ratio: 616 / 902;
+      max-width: 92%;
+      max-height: 92%;
+      width: auto;
+      height: auto;
       display: block;
-      object-fit: contain;
-      object-position: center bottom;
+      object-fit: cover;
+      object-position: center;
+      /* Chroma key en CSS puro: usa el filtro SVG #chroma-key-green
+         (definido al final de <body>) para detectar el "verdor" de cada
+         píxel (predominio del canal G sobre R y B, propio del croma
+         verde de callado.png/hablando.mp4) y convertirlo en
+         transparente, dejando intacto el resto de la imagen/vídeo. */
+      filter: url(#chroma-key-green);
     }
 
     .classroom-floor {
@@ -489,6 +531,7 @@
 
     .scene-label {
       position: absolute;
+      z-index: 2;
       top: 12px;
       left: 14px;
       background: rgba(122, 74, 31, 0.92);
@@ -859,6 +902,33 @@
   </style>
 </head>
 <body>
+
+  <!-- Filtro SVG de chroma key (croma verde) usado por .avatar-media
+       (ver <style> -> filter: url(#chroma-key-green)). No se muestra
+       nada aquí directamente: solo define el filtro para que la imagen
+       y el vídeo del avatar lo referencien desde el CSS. -->
+  <svg width="0" height="0" style="position: absolute; overflow: hidden;" aria-hidden="true" focusable="false">
+    <defs>
+      <filter id="chroma-key-green" color-interpolation-filters="sRGB">
+        <!-- "Verdor" de cada píxel: predominio del canal G sobre R y B.
+             Fondo verde -> valor alto; piel/ropa/pelo -> valor ~0. -->
+        <feColorMatrix in="SourceGraphic" type="matrix"
+          values="0  0  0  0  0
+                   0  0  0  0  0
+                   0  0  0  0  0
+                  -1  2 -1  0  0"
+          result="greenness" />
+        <!-- Umbral: verdor alto -> alfa 0 (transparente); verdor bajo
+             -> alfa 1 (opaco). El margen entre ambos da un borde suave
+             antialiaseado en vez de un recorte brusco. -->
+        <feComponentTransfer in="greenness" result="chromaMask">
+          <feFuncA type="linear" slope="-4" intercept="2.5" />
+        </feComponentTransfer>
+        <!-- Aplica esa máscara de alfa a los colores originales. -->
+        <feComposite in="SourceGraphic" in2="chromaMask" operator="in" />
+      </filter>
+    </defs>
+  </svg>
 
   <!-- Pantalla de inicio de sesión por usuario y contraseña -->
   <!-- Sin autorregistro: las cuentas las crea el profesor desde su panel
