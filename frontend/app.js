@@ -807,12 +807,17 @@ document.addEventListener("keydown", (e) => {
 // ============================================================
 // Mensajes de texto
 // ============================================================
-function sendText(text) {
+// inputType viaja al backend como "input_type" (ver websocket_chat en
+// main.py): "voice" cuando viene del micrófono (ver recognition.onend más
+// abajo) o "text" cuando el alumno lo ha escrito a mano. El tutor lo usa
+// para no exigir mayúsculas/puntuación en mensajes hablados, que por
+// naturaleza no las llevan.
+function sendText(text, inputType = "text") {
   text = (text || "").trim();
   if (!text) return;
   addMessage("tu", text);
   if (socket && socket.readyState === WebSocket.OPEN) {
-    socket.send(JSON.stringify({ message: text, session_id: currentSessionId }));
+    socket.send(JSON.stringify({ message: text, session_id: currentSessionId, input_type: inputType }));
   } else {
     addSystem("⚠️ Sin conexión, no se envió el mensaje");
   }
@@ -882,7 +887,7 @@ function initRecognition() {
     listening = false;
     updateButton();
     if (voiceTranscript) {
-      sendText(voiceTranscript);
+      sendText(voiceTranscript, "voice");
       voiceTranscript = "";
     }
   };
