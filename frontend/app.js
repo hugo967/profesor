@@ -180,6 +180,8 @@ let currentSessionId = null;
 window.currentSessionId = null;
 let activeExercise = null;
 window.activeExercise = null;
+let activeMoodleExercise = null;
+window.activeMoodleExercise = null;
 const currentConfig = { level: "", context: "" };
 
 // ---------- DOM ----------
@@ -556,6 +558,13 @@ function connect() {
     if (activeExercise) {
       socket.send(JSON.stringify({ type: "exercise_start", exercise: activeExercise }));
     }
+    if (activeMoodleExercise) {
+      // Al reconectar se pierde el estado en memoria de la conexión
+      // anterior (active_moodle_exercise vivía solo ahí, sin persistencia):
+      // se vuelve a pedir el mismo fichero desde cero, así que el tutor
+      // reinicia la práctica en vez de continuar por donde iba.
+      socket.send(JSON.stringify({ type: "moodle_exercise_start", exercise_id: activeMoodleExercise.id }));
+    }
   };
 
   socket.onmessage = (event) => {
@@ -604,6 +613,20 @@ function connect() {
     }
 
     if (data.type === "exercise_ack") {
+      return;
+    }
+
+    if (data.type === "moodle_exercise_ack") {
+      const count = data.total_questions ? ` (${data.total_questions} preguntas)` : "";
+      addSystem(`📘 Práctica iniciada: ${data.title}${count}`);
+      return;
+    }
+
+    if (data.type === "moodle_exercise_done") {
+      activeMoodleExercise = null;
+      window.activeMoodleExercise = null;
+      updateExerciseBadge();
+      addSystem(`🎉 ¡Práctica completada! ${data.title ? `"${data.title}"` : ""}`);
       return;
     }
 
@@ -818,6 +841,15 @@ if (newChatBtn) {
       }
       activeExercise = null;
       window.activeExercise = null;
+      updateExerciseBadge();
+    }
+
+    if (activeMoodleExercise) {
+      if (socket && socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({ type: "moodle_exercise_end" }));
+      }
+      activeMoodleExercise = null;
+      window.activeMoodleExercise = null;
       updateExerciseBadge();
     }
 
@@ -1075,6 +1107,9 @@ function updateExerciseBadge() {
   if (activeExercise) {
     badge.textContent = `🎯 Reto en curso: ${activeExercise.title}`;
     badge.classList.remove("hidden");
+  } else if (activeMoodleExercise) {
+    badge.textContent = `📘 Práctica: ${activeMoodleExercise.title}`;
+    badge.classList.remove("hidden");
   } else {
     badge.classList.add("hidden");
     badge.textContent = "";
@@ -1091,6 +1126,10 @@ function startExercise(ex) {
     description: (ex.content && ex.content.description) || "",
   };
   window.activeExercise = activeExercise;
+  // Un Reto y una práctica de Moodle no pueden estar activos a la vez
+  // (ver backend: exercise_start también limpia active_moodle_exercise).
+  activeMoodleExercise = null;
+  window.activeMoodleExercise = null;
 
   if (socket && socket.readyState === WebSocket.OPEN) {
     socket.send(JSON.stringify({ type: "exercise_start", exercise: activeExercise }));
@@ -1108,6 +1147,71 @@ function startExercise(ex) {
   addSystem(`🎯 Reto iniciado: ${activeExercise.title}`);
   showMainChatView();
 }
+
+// ============================================================
+// Ejercicios (prácticas leídas en directo de Moodle, sin persistencia:
+// ver GET /api/moodle/exercises y moodle_exercise_start en el backend)
+// ============================================================
+function startMoodleExercise(ex) {
+  if (!ex || !ex.id) return;
+
+  activeMoodleExercise = { id: ex.id, title: ex.title || "" };
+  window.activeMoodleExercise = activeMoodleExercise;
+  // Mismo criterio que al revés en startExercise: no pueden coexistir.
+  activeExercise = null;
+  window.activeExercise = null;
+
+  if (socket && socket.readyState === WebSocket.OPEN) {
+    socket.send(JSON.stringify({ type: "moodle_exercise_start", exercise_id: ex.id }));
+  } else {
+    addSystem("⚠️ Sin conexión, no se pudo iniciar la práctica");
+    return;
+  }
+
+  updateExerciseBadge();
+  showMainChatView();
+}
+
+window.startMoodleExercise = startMoodleExercise;
+
+async function loadMoodleExercises() {
+  const current_user = getCurrentUser();
+  const exercisesContent = document.getElementById("exercisesContent");
+  if (!exercisesContent) return;
+
+  exercisesContent.innerHTML = "<p>Cargando…</p>";
+  try {
+    const res = await fetch(apiUrl("/api/moodle/exercises"), {
+      headers: { "X-User-Id": current_user }
+    });
+    if (res.status === 503) {
+      exercisesContent.innerHTML = "<p>La integración con Moodle no está configurada todavía.</p>";
+      return;
+    }
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+    const data = await res.json();
+    window.__lastMoodleExercises = data;
+    if (!data || !data.length) {
+      exercisesContent.innerHTML = "<p>No hay prácticas activas en Moodle ahora mismo.</p>";
+      return;
+    }
+
+    const rows = data.map(ex => {
+      const meta = ex.type === "gift"
+        ? (ex.question_count != null ? `${ex.question_count} preguntas` : "preguntas")
+        : "material de repaso";
+      return `<li data-exercise-id="${ex.id}"><strong>${ex.title}</strong> — ${meta} `
+        + `<button type="button" onclick="window.startMoodleExercise({id:'${ex.id}', title:${JSON.stringify(ex.title)}})">▶️ Iniciar práctica</button></li>`;
+    }).join("");
+    exercisesContent.innerHTML = `<ul class="help-list">${rows}</ul>`;
+  } catch (err) {
+    console.error("Error cargando ejercicios de Moodle:", err);
+    exercisesContent.innerHTML = "<p>⚠️ No se pudieron cargar las prácticas de Moodle.</p>";
+  }
+}
+
+window.loadMoodleExercises = loadMoodleExercises;
 
 function startExerciseById(exerciseId) {
   const exercises = window.__lastExercises || [];
@@ -1206,26 +1310,6 @@ async function deleteSession(sessionId) {
 
 window.deleteSession = deleteSession;
 
-async function loadExercisesList() {
-  const current_user = getCurrentUser();
-  const exercisesContent = document.getElementById("exercisesContent");
-  if (!exercisesContent) return;
-
-  try {
-    const res = await fetch(apiUrl("/api/exercises"), {
-      headers: { "X-User-Id": current_user }
-    });
-    const data = await res.json();
-    if (data && data.length > 0) {
-      exercisesContent.innerHTML = `<ul>` + data.map(ex => `<li><b>${ex.title}</b> (${ex.level}) - ${ex.type}</li>`).join("") + `</ul>`;
-    } else {
-      exercisesContent.innerHTML = "<p>No hay ejercicios disponibles.</p>";
-    }
-  } catch (err) {
-    console.error("Error cargando ejercicios:", err);
-    exercisesContent.innerHTML = "<p>Error al cargar los ejercicios.</p>";
-  }
-}
 
 // ============================================================
 // Panel de Profesor (#teacher-dashboard)

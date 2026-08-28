@@ -1142,7 +1142,11 @@
 
     <div class="tab-content" id="tab-ejercicios">
       <h3>Ejercicios</h3>
-      <p>Próximamente.</p>
+      <p style="font-size: 0.85rem; color: #5a4630; margin-bottom: 4px;">
+        Prácticas leídas en directo del curso de Moodle (no se guardan en
+        el Historial).
+      </p>
+      <div id="exercisesContent"><p>Cargando…</p></div>
     </div>
 
     <!-- Panel de Retos / Tareas -->
@@ -1304,6 +1308,7 @@
 
       if (tabId === 'tab-progreso') loadProgreso();
       if (tabId === 'tab-history') loadHistorial();
+      if (tabId === 'tab-ejercicios' && typeof window.loadMoodleExercises === 'function') window.loadMoodleExercises();
       if (tabId === 'tab-retos') loadRetos();
       if (tabId === 'tab-profesor') loadProfesor();
     }
