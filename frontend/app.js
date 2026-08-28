@@ -695,11 +695,12 @@ if (newChatBtn) {
 
     if (chatEl) chatEl.innerHTML = "";
 
-    // Resetea el selector de Contexto/Objetivo a "General" (valor
-    // vacío): un chat nuevo no debe quedarse bloqueado en el modo del
-    // chat anterior, para poder elegir uno limpio. Se reenvía la config
-    // al backend para que su estado interno (current_context) quede
-    // sincronizado con lo que ahora muestra el desplegable.
+    // Resetea el selector de Contexto/Objetivo al modo "Default" (valor
+    // vacío, sin iniciativa propia): un chat nuevo no debe quedarse
+    // bloqueado en el modo del chat anterior, obliga a elegir uno limpio.
+    // Se reenvía la config al backend para que su estado interno
+    // (current_context) quede sincronizado con lo que ahora muestra el
+    // desplegable.
     if (contextSelect) contextSelect.value = "";
     currentConfig.context = "";
     sendConfig();
@@ -998,12 +999,15 @@ async function loadSpecificSession(sessionId) {
 
     // Al cambiar a otra conversación no se conoce (desde aquí) el modo
     // con el que se dio originalmente, así que el desplegable de
-    // Contexto/Objetivo se resetea a "General" en vez de dejarlo
-    // mostrando el modo de la conversación anterior. No se reenvía la
-    // config al backend: retomar un chat pasado no debe disparar un
-    // tema proactivo nuevo encima de la conversación ya existente.
+    // Contexto/Objetivo se resetea al modo "Default" (sin iniciativa)
+    // en vez de dejarlo mostrando el modo de la conversación anterior:
+    // obliga a elegir de nuevo un modo antes de poder seguir hablando.
+    // A diferencia de antes, sí se reenvía la config al backend: al ser
+    // "Default" no proactivo, no dispara ningún tema nuevo encima de la
+    // conversación ya existente, solo sincroniza current_context.
     if (contextSelect) contextSelect.value = "";
     currentConfig.context = "";
+    sendConfig();
 
     if (chatEl) {
       chatEl.innerHTML = "";
