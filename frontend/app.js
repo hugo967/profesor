@@ -347,6 +347,44 @@ function addSystem(text) {
   chatEl.scrollTop = chatEl.scrollHeight;
 }
 
+// ============================================================
+// Toast flotante (avisos breves que no deben ocupar sitio fijo en la
+// pizarra, p. ej. "Configuración aplicada": ver "config_ok" más abajo)
+// ============================================================
+let toastEl = null;
+let toastHideTimer = null;
+let toastRemoveTimer = null;
+
+function showToast(text, duration = 2000) {
+  if (!toastEl) {
+    toastEl = document.createElement("div");
+    toastEl.className = "toast";
+    document.body.appendChild(toastEl);
+  }
+  clearTimeout(toastHideTimer);
+  clearTimeout(toastRemoveTimer);
+
+  toastEl.textContent = text;
+  // Fuerza un reflow antes de volver a añadir "visible": si el toast
+  // anterior seguía desvaneciéndose, sin esto el navegador podría fusionar
+  // el remove+add de la clase y no reiniciar la transición de entrada.
+  toastEl.classList.remove("visible");
+  void toastEl.offsetWidth;
+  toastEl.classList.add("visible");
+
+  toastHideTimer = setTimeout(() => {
+    toastEl.classList.remove("visible");
+    // Espera a que termine la transición de salida (ver CSS) antes de
+    // quitarlo del DOM del todo.
+    toastRemoveTimer = setTimeout(() => {
+      if (toastEl) {
+        toastEl.remove();
+        toastEl = null;
+      }
+    }, 300);
+  }, duration);
+}
+
 let typingIndicator = null;
 
 function showTypingIndicator() {
@@ -547,7 +585,10 @@ function connect() {
     }
 
     if (data.type === "config_ok") {
-      addSystem("✓ " + configFeedback(data.level, data.context));
+      // Toast flotante en vez de addSystem(): es un aviso menor y frecuente
+      // (se dispara cada vez que se cambia nivel/contexto) que no debe
+      // dejar un mensaje fijo ocupando sitio en la pizarra.
+      showToast("✓ " + configFeedback(data.level, data.context));
       return;
     }
 

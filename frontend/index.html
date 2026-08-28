@@ -600,6 +600,32 @@
       border: 1px dashed rgba(255, 233, 168, 0.4);
     }
 
+    /* Toast flotante (ver showToast en app.js): no ocupa sitio en el
+       layout, flota sobre todo lo demás y se desvanece solo. */
+    .toast {
+      position: fixed;
+      top: 14px;
+      left: 50%;
+      z-index: 300;
+      max-width: min(420px, 90vw);
+      padding: 7px 18px;
+      background: rgba(51, 32, 12, 0.92);
+      color: #ffe9a8;
+      border: 1px solid rgba(255, 233, 168, 0.45);
+      border-radius: 999px;
+      font-size: 0.85rem;
+      text-align: center;
+      box-shadow: 0 8px 22px rgba(0, 0, 0, 0.35);
+      pointer-events: none;
+      opacity: 0;
+      transform: translate(-50%, -10px);
+      transition: opacity 0.25s ease, transform 0.25s ease;
+    }
+    .toast.visible {
+      opacity: 1;
+      transform: translate(-50%, 0);
+    }
+
     .typing-indicator {
       display: flex !important;
       align-items: center;
