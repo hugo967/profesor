@@ -366,6 +366,59 @@ function hideTypingIndicator() {
 }
 
 // ============================================================
+// Indicador de carga del tema proactivo (Gramática/Vocabulario/
+// Conversación libre)
+// ============================================================
+// Se muestra desde que el backend avisa (mensaje {"type":
+// "proactive_loading"}) de que va a generar el primer mensaje de
+// iniciativa, hasta que ese mensaje llega completo (texto + audio) por el
+// canal normal, o hasta que salte el aviso de error/timeout: bloquea el
+// input mientras tanto para que el alumno no pueda escribir a mitad de la
+// carga y acabe cruzando los hilos con la respuesta que está por llegar.
+let proactiveLoadingEl = null;
+let proactiveLoadingTimeout = null;
+
+function setInputLocked(locked) {
+  if (textInput) textInput.disabled = locked;
+  if (sendBtn) sendBtn.disabled = locked;
+  // Si el navegador no soporta reconocimiento de voz, el botón ya está
+  // deshabilitado de forma permanente (ver initRecognition): no lo
+  // "reactivamos" por error al desbloquear.
+  if (speakBtn && recognition) speakBtn.disabled = locked;
+}
+
+function showProactiveLoading() {
+  if (!proactiveLoadingEl && chatEl) {
+    proactiveLoadingEl = document.createElement("div");
+    proactiveLoadingEl.className = "msg sys proactive-loading";
+    proactiveLoadingEl.textContent = "🧑‍🏫 El profesor está pensando el tema del día…";
+    chatEl.appendChild(proactiveLoadingEl);
+    chatEl.scrollTop = chatEl.scrollHeight;
+  }
+  setInputLocked(true);
+
+  // Red de seguridad: si por lo que sea nunca llega el mensaje (p. ej. un
+  // fallo de Groq/TTS ya registrado en el backend pero sin aviso al
+  // frontend en ese caso concreto), no se deja el input bloqueado
+  // indefinidamente.
+  clearTimeout(proactiveLoadingTimeout);
+  proactiveLoadingTimeout = setTimeout(() => {
+    hideProactiveLoading();
+    addSystem("⚠️ El tema tardó demasiado en cargar. Ya puedes escribir con normalidad.");
+  }, 20000);
+}
+
+function hideProactiveLoading() {
+  if (proactiveLoadingEl) {
+    proactiveLoadingEl.remove();
+    proactiveLoadingEl = null;
+  }
+  clearTimeout(proactiveLoadingTimeout);
+  proactiveLoadingTimeout = null;
+  setInputLocked(false);
+}
+
+// ============================================================
 // Audio
 // ============================================================
 // Audio de TTS actualmente en curso: solo sus eventos pueden controlar el
@@ -374,18 +427,35 @@ function hideTypingIndicator() {
 // "pause" no interfiera con el estado del avatar del audio nuevo.
 let currentAvatarAudio = null;
 
-function playAudio(base64) {
-  if (!base64) return;
-
+// Corta en seco el audio TTS que estuviera sonando (o todavía cargando/
+// decodificando, aunque no haya llegado a sonar): quita los listeners
+// antes de pausar para que su "pause" no dispare backToIdle() dos veces
+// ni interfiera con un audio nuevo, y limpia src para abandonar cualquier
+// descarga/decodificación en curso del dato base64.
+// forceIdle=false se usa solo al interrumpir un audio con uno nuevo (ver
+// playAudio): si el audio nuevo ya trae voz, su propio monitor de volumen
+// lo detectará enseguida, sin parpadeo de por medio a la imagen fija.
+function stopCurrentAudio({ forceIdle = true } = {}) {
   if (currentAvatarAudio) {
     currentAvatarAudio.onpause = null;
     currentAvatarAudio.onended = null;
     currentAvatarAudio.onerror = null;
+    currentAvatarAudio.onplaying = null;
     currentAvatarAudio.pause();
+    currentAvatarAudio.src = "";
+    currentAvatarAudio = null;
   }
-  // No fuerza la imagen fija aquí: si el audio nuevo ya trae voz, el
-  // propio monitor de volumen del audio nuevo lo detectará enseguida.
-  stopVolumeMonitor({ forceIdle: false });
+  stopVolumeMonitor({ forceIdle });
+  // Corte duro (no una simple interrupción por un audio nuevo): al igual
+  // que el final natural de una frase, deja el vídeo listo desde el
+  // principio para la próxima vez que hable.
+  if (forceIdle && avatarTalkingEl) avatarTalkingEl.currentTime = 0;
+}
+
+function playAudio(base64) {
+  if (!base64) return;
+
+  stopCurrentAudio({ forceIdle: false });
 
   const audio = new Audio("data:audio/mpeg;base64," + base64);
   currentAvatarAudio = audio;
@@ -487,6 +557,11 @@ function connect() {
       return;
     }
 
+    if (data.type === "proactive_loading") {
+      showProactiveLoading();
+      return;
+    }
+
     if (data.type === "exercise_ack") {
       return;
     }
@@ -517,11 +592,13 @@ function connect() {
 
     if (data.type === "error") {
       hideTypingIndicator();
+      hideProactiveLoading();
       addSystem("⚠️ " + data.message);
       return;
     }
 
     hideTypingIndicator();
+    hideProactiveLoading();
     addMessage("tutor", data.text);
     playAudio(data.audio_base64);
   };
@@ -529,6 +606,7 @@ function connect() {
   socket.onclose = () => {
     setStatus("Desconectado", false);
     addSystem("Conexión perdida. Reintentando…");
+    hideProactiveLoading();
     scheduleReconnect();
   };
 
@@ -678,6 +756,15 @@ if (helpModal) {
 
 if (newChatBtn) {
   newChatBtn.addEventListener("click", () => {
+    // Corta en seco cualquier audio TTS que estuviera sonando o
+    // todavía cargando/decodificando, y cualquier indicador de carga del
+    // tema proactivo que hubiera quedado a medias (si no, chatEl se
+    // vacía a continuación y su nodo quedaría huérfano con el input
+    // bloqueado para siempre): el avatar debe callarse al instante y el
+    // alumno debe poder escribir de inmediato en el chat nuevo.
+    stopCurrentAudio();
+    hideProactiveLoading();
+
     // No borra nada en Supabase: solo deja de referenciar la sesión
     // actual. La siguiente vez que se envíe un mensaje, el backend
     // creará una sesión nueva (ver socket "session" y sendText()).
@@ -987,6 +1074,14 @@ window.startExerciseById = startExerciseById;
 
 async function loadSpecificSession(sessionId) {
   const current_user = getCurrentUser();
+
+  // Igual que "Nuevo Chat": al cambiar de conversación, el avatar debe
+  // callarse al instante y cualquier indicador de carga del tema
+  // proactivo que hubiera quedado a medias se descarta (chatEl se vacía
+  // más abajo, así que su nodo quedaría huérfano con el input bloqueado
+  // para siempre si no se limpia aquí).
+  stopCurrentAudio();
+  hideProactiveLoading();
 
   try {
     const res = await fetch(apiUrl(`/api/history/${sessionId}`), {
