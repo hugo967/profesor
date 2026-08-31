@@ -764,16 +764,18 @@
          de .app (ver comentario de arriba). */
       .columns { display: contents; }
 
-      /* ---------- Banda superior · izquierda: rail de controles ---------- */
+      /* ---------- Banda superior · izquierda: rail de controles ----------
+         Contenido apretado a propósito para que las 2 filas de selectores
+         MÁS la fila de acciones (⚙️ + Cerrar sesión) quepan enteras dentro
+         de la banda superior sin scroll en un móvil normal. El overflow-y
+         se mantiene solo como red de seguridad para pantallas diminutas. */
       .config-bar {
         grid-area: config;
         flex-direction: column;
         align-items: stretch;
         justify-content: flex-start;
-        gap: 7px;
-        padding: 7px;
-        /* si no cabe todo (pantallas muy bajas o teclado abierto) el rail
-           scrollea por dentro en vez de empujar/solapar nada */
+        gap: 5px;
+        padding: 6px 6px 5px;
         overflow-y: auto;
         overflow-x: hidden;
         border-bottom: none;
@@ -782,45 +784,56 @@
         box-shadow: inset -4px 0 8px rgba(0, 0, 0, 0.2);
       }
       /* Cada fila del rail apila su etiqueta + <select> y, debajo, el
-         botón de ayuda, todo a lo ancho del rail (en ~160px no caben
+         botón de ayuda, todo a lo ancho del rail (en ~150px no caben
          <select> y botón lado a lado). */
       .config-row {
         display: flex;
         flex-direction: column;
         align-items: stretch;
         width: 100%;
-        gap: 4px;
+        gap: 3px;
       }
       .field-group {
         display: flex;
         flex-direction: column;
         min-width: 0;
-        gap: 2px;
+        gap: 1px;
       }
-      .field-group label { font-size: 0.72rem; }
+      .field-group label {
+        font-size: 0.66rem;
+        line-height: 1.1;
+        /* una sola línea: "Contexto / Objetivo" no se parte en dos y roba
+           altura al rail */
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
       .config-bar select,
       .field-group select { width: 100%; }
       #level-test-btn, #help-btn {
         width: 100%;
+        /* normal (no nowrap): en pantallas estrechas prefiero que el
+           texto largo del botón envuelva a que se recorte */
         white-space: normal;
-        line-height: 1.15;
+        line-height: 1.1;
       }
 
+      /* ⚙️ + Cerrar sesión en la MISMA fila (antes apilados): recupera
+         ~30px de alto y deja los dos botones siempre a la vista. */
       .config-actions {
         display: flex;
-        flex-direction: column;
+        flex-direction: row;
+        align-items: stretch;
         width: 100%;
-        gap: 6px;
+        gap: 5px;
       }
-      .config-actions button { width: 100%; text-align: center; }
-      /* En escritorio #settings-btn usa margin-left:auto para irse a la
-         derecha del flex-wrap; en el rail vertical ya no hace falta. */
-      .config-actions #settings-btn { margin-left: 0; }
+      .config-actions #logout-btn { flex: 1; text-align: center; }
+      .config-actions #settings-btn { flex: 0 0 auto; margin-left: 0; }
 
       .config-bar select,
       #level-test-btn, #help-btn, #new-chat-btn, #settings-btn, #logout-btn {
-        font-size: 0.78rem;
-        padding: 5px 8px;
+        font-size: 0.74rem;
+        padding: 4px 6px;
       }
 
       /* ---------- Banda superior · derecha: avatar ---------- */
@@ -883,11 +896,13 @@
     @media (max-width: 360px) {
       .app {
         grid-template-columns: minmax(104px, 40%) 1fr;
-        grid-template-rows: clamp(172px, 24vh, 220px) 1fr;
+        /* min. algo mayor que en <=768px: el rail necesita ~180px para
+           mostrar las 2 filas + acciones sin scroll también aquí */
+        grid-template-rows: clamp(184px, 25vh, 224px) 1fr;
       }
-      .config-bar { padding: 6px 5px; gap: 6px; }
+      .config-bar { padding: 5px 4px; gap: 4px; }
       .config-bar select,
-      #level-test-btn, #help-btn, #settings-btn, #logout-btn { font-size: 0.72rem; padding: 4px 6px; }
+      #level-test-btn, #help-btn, #settings-btn, #logout-btn { font-size: 0.71rem; padding: 4px 5px; }
     }
 
     @keyframes pulse {
