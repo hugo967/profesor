@@ -182,6 +182,33 @@ let manualStop = false;
 // true (a través de posibles reanudaciones automáticas) y se envía entera
 // de una vez SOLO cuando el alumno para manualmente, no frase a frase.
 let voiceTranscript = "";
+// Motor de voz principal: grabar el audio en el navegador (MediaRecorder)
+// y transcribirlo en el backend con Whisper vía Groq (POST /api/transcribe).
+// Es mucho más preciso y consistente entre navegadores que la Web Speech
+// API, que queda solo como fallback (ver initRecognition / canRecordAudio).
+// El navegador puede grabar audio (getUserMedia + MediaRecorder). Si no,
+// se usa directamente la Web Speech API.
+const canRecordAudio = !!(
+  navigator.mediaDevices &&
+  navigator.mediaDevices.getUserMedia &&
+  window.MediaRecorder
+);
+let mediaRecorder = null;
+let micStream = null;
+let recordedChunks = [];
+let recording = false;
+let startingRecording = false;
+let transcribing = false;
+let recordStopTimer = null;
+// Si /api/transcribe falla, se marca y el micrófono pasa a usar la Web
+// Speech API del navegador el resto de la sesión.
+let serverTranscriptionDown = false;
+// Parada de seguridad de la grabación: un clip larguísimo casi siempre es
+// que el alumno se olvidó de pulsar para enviar.
+const MAX_RECORDING_MS = 45000;
+// Última frase del tutor: se manda como sesgo a /api/transcribe para
+// orientar a Whisper hacia el vocabulario que toca.
+let lastTutorMessage = "";
 let reconnectTimer = null;
 let user_id = null;
 let currentSessionId = null;
@@ -429,10 +456,10 @@ let proactiveLoadingTimeout = null;
 function setInputLocked(locked) {
   if (textInput) textInput.disabled = locked;
   if (sendBtn) sendBtn.disabled = locked;
-  // Si el navegador no soporta reconocimiento de voz, el botón ya está
+  // Si no hay ni grabación de audio ni Web Speech API, el botón ya está
   // deshabilitado de forma permanente (ver initRecognition): no lo
   // "reactivamos" por error al desbloquear.
-  if (speakBtn && recognition) speakBtn.disabled = locked;
+  if (speakBtn && (recognition || canRecordAudio)) speakBtn.disabled = locked;
 }
 
 function showProactiveLoading() {
@@ -672,6 +699,7 @@ function connect() {
     hideTypingIndicator();
     hideProactiveLoading();
     addMessage("tutor", data.text);
+    lastTutorMessage = data.text || "";
     playAudio(data.audio_base64);
   };
 
@@ -956,8 +984,14 @@ function initRecognition() {
   const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 
   if (!SpeechRecognition) {
-    addSystem("⚠️ Tu navegador no soporta reconocimiento de voz");
-    if (speakBtn) speakBtn.disabled = true;
+    // Sin Web Speech API. Si el navegador sí puede grabar audio, el
+    // micrófono sigue funcionando por la vía de /api/transcribe (Whisper),
+    // así que no se avisa ni se deshabilita nada.
+    recognition = null;
+    if (!canRecordAudio) {
+      addSystem("⚠️ Tu navegador no soporta el micrófono");
+      if (speakBtn) speakBtn.disabled = true;
+    }
     return;
   }
 
@@ -1046,12 +1080,170 @@ function initRecognition() {
   };
 }
 
+// ============================================================
+// Grabación de voz -> transcripción en el backend (Whisper / Groq)
+// ============================================================
+// Motor PRINCIPAL del micrófono. Se graba el audio con MediaRecorder y se
+// envía a POST /api/transcribe, que lo transcribe con Whisper forzando el
+// idioma inglés (el alumno siempre habla inglés por el micro). Mucho más
+// preciso y consistente que la Web Speech API del navegador, que queda de
+// fallback (ver la rama `recognition` del handler del botón).
+
+function pickAudioMime() {
+  const candidates = [
+    "audio/webm;codecs=opus",
+    "audio/webm",
+    "audio/mp4",
+    "audio/ogg;codecs=opus",
+  ];
+  for (const m of candidates) {
+    if (window.MediaRecorder && MediaRecorder.isTypeSupported(m)) return m;
+  }
+  return "";
+}
+
+async function ensureMicStream() {
+  if (micStream && micStream.active) return micStream;
+  micStream = await navigator.mediaDevices.getUserMedia({
+    audio: {
+      echoCancellation: true,
+      noiseSuppression: true,
+      autoGainControl: true,
+    },
+  });
+  return micStream;
+}
+
+async function startRecording() {
+  if (recording || startingRecording) return true;
+  startingRecording = true;
+  let stream;
+  try {
+    stream = await ensureMicStream();
+  } catch (e) {
+    console.error("getUserMedia falló:", e);
+    startingRecording = false;
+    addSystem("⚠️ No se pudo acceder al micrófono (permiso denegado o sin dispositivo)");
+    return false;
+  }
+
+  const mime = pickAudioMime();
+  try {
+    mediaRecorder = mime
+      ? new MediaRecorder(stream, { mimeType: mime })
+      : new MediaRecorder(stream);
+  } catch (e) {
+    console.error("MediaRecorder falló:", e);
+    startingRecording = false;
+    return false;
+  }
+
+  recordedChunks = [];
+  mediaRecorder.ondataavailable = (ev) => {
+    if (ev.data && ev.data.size > 0) recordedChunks.push(ev.data);
+  };
+  mediaRecorder.onstop = () => {
+    clearTimeout(recordStopTimer);
+    const type = mediaRecorder.mimeType || mime || "audio/webm";
+    const blob = new Blob(recordedChunks, { type });
+    recordedChunks = [];
+    recording = false;
+    if (!blob.size) {
+      transcribing = false;
+      updateButton();
+      return;
+    }
+    transcribeAndSend(blob);
+  };
+
+  mediaRecorder.start();
+  recording = true;
+  startingRecording = false;
+  recordStopTimer = setTimeout(() => {
+    if (recording) stopRecording();
+  }, MAX_RECORDING_MS);
+  return true;
+}
+
+function stopRecording() {
+  clearTimeout(recordStopTimer);
+  if (!mediaRecorder || !recording) return;
+  // El envío ocurre en onstop; feedback inmediato mientras tanto.
+  transcribing = true;
+  updateButton();
+  try {
+    mediaRecorder.stop();
+  } catch (e) {
+    console.error("mediaRecorder.stop() falló:", e);
+  }
+}
+
+async function transcribeAndSend(blob) {
+  transcribing = true;
+  updateButton();
+
+  const form = new FormData();
+  const ext = blob.type.includes("mp4")
+    ? "m4a"
+    : blob.type.includes("ogg")
+    ? "ogg"
+    : "webm";
+  form.append("audio", blob, `voz.${ext}`);
+  if (currentConfig.context) {
+    form.append("context_label", optionLabel(contextSelect, currentConfig.context));
+  }
+  if (lastTutorMessage) form.append("last_tutor_message", lastTutorMessage);
+
+  try {
+    const res = await fetch(apiUrl("/api/transcribe"), {
+      method: "POST",
+      headers: { "X-User-Id": getCurrentUser() },
+      body: form,
+    });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const data = await res.json();
+    const text = (data.text || "").trim();
+    transcribing = false;
+    updateButton();
+    if (text) {
+      sendText(text, "voice");
+    } else {
+      addSystem("🎤 No te he entendido, prueba a hablar otra vez.");
+    }
+  } catch (e) {
+    console.error("Fallo transcribiendo:", e);
+    transcribing = false;
+    updateButton();
+    if (recognition) {
+      // A partir de ahora, micrófono por Web Speech API del navegador.
+      serverTranscriptionDown = true;
+      addSystem("⚠️ Falló la transcripción del servidor; se usará el reconocimiento del navegador. Pulsa el micrófono para repetir.");
+    } else {
+      addSystem("⚠️ No se pudo transcribir el audio. Inténtalo de nuevo o escribe el mensaje.");
+    }
+  }
+}
+
 if (speakBtn) {
-  speakBtn.addEventListener("click", () => {
+  speakBtn.addEventListener("click", async () => {
     // Pulsar el micro es un gesto de usuario: aprovecha para arrancar/
     // reanudar el AudioContext cuanto antes, así ya está listo cuando
     // llegue el audio TTS de la respuesta.
     ensureAudioContext();
+    if (transcribing) return; // ocupado convirtiendo voz -> texto
+
+    // Motor principal: grabación + /api/transcribe.
+    if (canRecordAudio && !serverTranscriptionDown) {
+      if (recording) {
+        stopRecording();
+      } else {
+        await startRecording();
+        updateButton();
+      }
+      return;
+    }
+
+    // Fallback: Web Speech API del navegador.
     if (!recognition) return;
     if (listening) {
       // Única forma de detener la escucha y enviar: esta pulsación.
@@ -1074,9 +1266,14 @@ if (speakBtn) {
 
 function updateButton() {
   if (!speakBtn || !btnLabel) return;
-  speakBtn.classList.toggle("listening", listening);
-  speakBtn.textContent = listening ? "🛑" : "🎤";
-  btnLabel.textContent = listening
+  if (!recognition && !canRecordAudio) return; // micrófono no disponible
+  const active = listening || recording;
+  speakBtn.classList.toggle("listening", active);
+  speakBtn.disabled = transcribing;
+  speakBtn.textContent = transcribing ? "⏳" : active ? "🛑" : "🎤";
+  btnLabel.textContent = transcribing
+    ? "Transcribiendo…"
+    : active
     ? "Escuchando… pulsa 🛑 para enviar"
     : "Pulsa para hablar";
 }
