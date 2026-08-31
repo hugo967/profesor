@@ -924,6 +924,34 @@ if (textInput) {
 // ============================================================
 // Reconocimiento de voz
 // ============================================================
+// El alumno SIEMPRE habla en inglés por el micrófono: esta app es un tutor
+// de inglés y lo único que se transcribe es la frase inglesa que produce el
+// alumno (las pistas en español las escribe el tutor en el chat, nunca se
+// dictan). Por eso el idioma de reconocimiento es fijo y estricto: en-US.
+// Se fuerza en una constante y se REASIGNA antes de cada .start() para que
+// ni el idioma del navegador, ni una extensión, ni una reanudación
+// automática puedan dejar el motor escuchando en es-ES y colar falsos
+// amigos fonéticos (p. ej. "carpet" -> "carpeta", "actually" -> "actualmente").
+// Si algún día hubiera un modo en el que el alumno deba hablar español,
+// este es el único punto a cambiar: pasar el idioma que toque a
+// startRecognition() en función del contexto activo.
+const RECOGNITION_LANG = "en-US";
+
+// Arranca el motor asegurando SIEMPRE el idioma correcto justo antes.
+// Devuelve true si el start() no lanzó (puede fallar si el motor todavía
+// no ha soltado el recurso de la sesión anterior).
+function startRecognition() {
+  if (!recognition) return false;
+  recognition.lang = RECOGNITION_LANG;
+  try {
+    recognition.start();
+    return true;
+  } catch (e) {
+    console.error("recognition.start() falló:", e);
+    return false;
+  }
+}
+
 function initRecognition() {
   const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 
@@ -934,7 +962,7 @@ function initRecognition() {
   }
 
   recognition = new SpeechRecognition();
-  recognition.lang = "en-US";
+  recognition.lang = RECOGNITION_LANG;
   recognition.interimResults = false;
   // continuous=true reduce los cortes por pausas cortas, pero NO garantiza
   // que el motor no se detenga solo tras un silencio largo. La escucha
@@ -968,23 +996,20 @@ function initRecognition() {
     // En los casos (b) y (c) reanudamos: el micro debe seguir abierto
     // hasta la acción manual, y no se envía nada.
     if (listening && !manualStop) {
-      try {
-        recognition.start();
-        return;
-      } catch (err) {
-        // start() puede fallar si el motor aún no ha soltado el recurso;
-        // un reintento breve suele bastar.
-        setTimeout(() => {
-          if (listening && !manualStop) {
-            try { recognition.start(); } catch (e) {
-              console.error("No se pudo reanudar el micrófono:", e);
-              listening = false;
-              updateButton();
-            }
-          }
-        }, 250);
-        return;
-      }
+      // startRecognition() reasigna recognition.lang = RECOGNITION_LANG en
+      // cada reanudación: si no, un corte por silencio podría devolver el
+      // motor a escuchar en el idioma por defecto del navegador.
+      if (startRecognition()) return;
+      // start() puede fallar si el motor aún no ha soltado el recurso;
+      // un reintento breve suele bastar.
+      setTimeout(() => {
+        if (listening && !manualStop && !startRecognition()) {
+          console.error("No se pudo reanudar el micrófono");
+          listening = false;
+          updateButton();
+        }
+      }, 250);
+      return;
     }
 
     // Parada manual (o fin definitivo): ahora sí se envía todo lo
@@ -1040,12 +1065,9 @@ if (speakBtn) {
     voiceTranscript = "";
     manualStop = false;
     listening = true;
-    try {
-      recognition.start();
-    } catch (e) {
-      // Ya estaba arrancando: no es un problema.
-      console.error("recognition.start() falló:", e);
-    }
+    // startRecognition() fija recognition.lang = RECOGNITION_LANG antes de
+    // arrancar. Si lanza (p. ej. ya estaba arrancando) no es un problema.
+    startRecognition();
     updateButton();
   });
 }
