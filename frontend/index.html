@@ -730,101 +730,129 @@
     .hint { font-size: 0.75rem; color: rgba(240, 230, 207, 0.6); }
 
     /* ============================================================
-       Responsive móvil (SOLO <= 768px): apila el layout en vertical
-       (avatar 3D compacto arriba, chat/controles abajo) sin tocar ni
-       una sola regla fuera de esta media query, para no alterar la
-       versión de escritorio.
+       Responsive móvil (SOLO <= 768px): reparte la pantalla en dos
+       mitades — un rail vertical compacto a la IZQUIERDA con TODOS los
+       desplegables, selectores y controles de configuración, y la
+       DERECHA libre para el avatar (arriba, centrado y protagonista) y
+       la pizarra de texto (chat + entrada de mensaje) debajo.
+       Todo vive dentro de esta media query: la versión de escritorio no
+       se toca ni una sola regla.
        ============================================================ */
     @media (max-width: 768px) {
       .app {
-        flex-direction: column;
+        /* row en vez de column: rail de controles | zona avatar+pizarra */
+        flex-direction: row;
+        align-items: stretch;
         height: 100vh;
         height: 100dvh; /* viewport dinámico: se ajusta si el teclado táctil reduce el área visible */
         padding: 4px;
         gap: 4px;
       }
 
-      .columns {
-        flex-direction: column;
-        gap: 4px;
-      }
-
-      /* Avatar 3D reducido al mínimo imprescindible: la pizarra (chat) es
-         la prioridad absoluta del espacio vertical en móvil, así que el
-         avatar solo se queda con lo justo para seguir siendo reconocible. */
-      .col-avatar { order: -1; flex: none; height: clamp(90px, 15vh, 160px); }
-      .col-chat { flex: 1 1 auto; min-height: 0; }
-
-      .classroom-floor { height: 12px; }
-
-      /* Barra de configuración: 3 filas limpias en vertical en vez del
-         flex-wrap "suelto" de escritorio.
-         Fila 1: selector de Nivel + botón de ayuda de nivel.
-         Fila 2: selector de Contexto + botón de ayuda de contextos.
-         Fila 3: barra de acciones (Ajustes + Cerrar sesión) al 100%. */
+      /* ---------- Mitad izquierda: rail de controles ---------- */
       .config-bar {
+        flex: 0 0 37%;
+        min-width: 108px;
+        max-width: 208px;
+        align-self: stretch;
         flex-direction: column;
         align-items: stretch;
-        padding: 5px 8px;
-        gap: 4px;
+        justify-content: flex-start;
+        gap: 8px;
+        padding: 8px 7px;
+        /* si no cabe todo (pantallas muy bajas o teclado abierto) el rail
+           scrollea por dentro en vez de empujar/solapar nada */
+        overflow-y: auto;
+        overflow-x: hidden;
+        border-bottom: none;
+        border-right: 3px solid #c98a4a;
+        border-radius: 8px 0 0 8px;
+        box-shadow: inset -4px 0 8px rgba(0, 0, 0, 0.2);
       }
+      /* Cada fila del rail apila su etiqueta + <select> y, debajo, el
+         botón de ayuda, todo a lo ancho del rail. */
       .config-row {
         display: flex;
-        /* flex-end en vez de center: el botón de ayuda se alinea con el
-           <select> (abajo de la fila), ignorando la altura del <label>
-           que va encima dentro de .field-group. */
-        align-items: flex-end;
-        justify-content: space-between;
+        flex-direction: column;
+        align-items: stretch;
         width: 100%;
-        gap: 8px;
+        gap: 4px;
       }
-      /* El selector (con su etiqueta encima) ocupa todo el espacio
-         disponible de la fila; el botón de ayuda queda a la derecha. */
       .field-group {
         display: flex;
         flex-direction: column;
-        flex: 1;
         min-width: 0;
         gap: 2px;
       }
       .field-group label { font-size: 0.72rem; }
+      .config-bar select,
       .field-group select { width: 100%; }
-      #level-test-btn, #help-btn { flex: none; white-space: nowrap; }
+      #level-test-btn, #help-btn {
+        width: 100%;
+        white-space: normal;
+        line-height: 1.15;
+      }
 
       .config-actions {
         display: flex;
+        flex-direction: column;
         width: 100%;
-        gap: 8px;
+        gap: 6px;
+        /* empuja Ajustes + Cerrar sesión al fondo del rail */
+        margin-top: auto;
       }
-      .config-actions button {
-        flex: 1;
-        text-align: center;
-      }
+      .config-actions button { width: 100%; text-align: center; }
       /* En escritorio #settings-btn usa margin-left:auto para irse a la
-         derecha del flex-wrap; en esta fila de 2 botones al 100% ya no
-         hace falta (y rompería el reparto 50/50). */
+         derecha del flex-wrap; en el rail vertical ya no hace falta. */
       .config-actions #settings-btn { margin-left: 0; }
 
       .config-bar select,
       #level-test-btn, #help-btn, #new-chat-btn, #settings-btn, #logout-btn {
-        font-size: 0.8rem;
-        padding: 4px 8px;
+        font-size: 0.78rem;
+        padding: 5px 8px;
       }
 
-      header { padding: 6px 14px 3px; }
-      header h1 { font-size: 1.2rem; }
-      #new-chat-btn { font-size: 0.72rem; padding: 4px 8px; top: 6px; right: 8px; }
-      .status { font-size: 0.78rem; }
+      /* ---------- Mitad derecha: avatar + pizarra ---------- */
+      .columns {
+        flex: 1;
+        min-width: 0;
+        flex-direction: column;
+        gap: 4px;
+      }
 
-      #exercise-badge { margin: 0 10px 5px; font-size: 0.82rem; padding: 5px 10px; }
+      /* Avatar arriba, centrado y con presencia real: es el foco visual
+         de la mitad derecha. .avatar-wrap ya centra su contenido. */
+      .col-avatar {
+        order: -1;
+        flex: 0 0 auto;
+        height: clamp(150px, 32vh, 300px);
+        border-radius: 8px 8px 0 0;
+      }
+      .classroom-floor { height: 12px; }
+
+      /* La pizarra ocupa todo el alto restante de la mitad derecha. */
+      .col-chat {
+        flex: 1 1 auto;
+        min-height: 0;
+        border-radius: 0 0 8px 8px;
+      }
+
+      /* En móvil el título sale del layout (está en el login y en la
+         pestaña del navegador): la mitad derecha es solo avatar + texto.
+         Se mantienen la barra de estado y el botón de nuevo chat. */
+      header { padding: 4px 10px 2px; min-height: 30px; }
+      header h1 { display: none; }
+      #new-chat-btn { font-size: 0.7rem; padding: 4px 8px; top: 4px; right: 6px; }
+      .status { font-size: 0.72rem; margin-top: 0; padding-right: 84px; }
+
+      #exercise-badge { margin: 0 8px 4px; font-size: 0.8rem; padding: 5px 10px; }
 
       /* Zona de mensajes: siempre flex:1 con overflow-y propio, así que
          al abrirse el teclado (que reduce 100dvh) el chat se encoge pero
-         los controles de abajo (input + micro) permanecen visibles,
-         nunca tapados. Paddings verticales al mínimo para que quepa el
-         máximo historial posible sin sacrificar la legibilidad del texto. */
+         la entrada de mensaje (input + micro) permanece visible, nunca
+         tapada. Paddings al mínimo para maximizar historial legible. */
       #chat { padding: 6px 10px; gap: 6px; }
-      .msg { font-size: 1rem; padding: 8px 12px; max-width: 96%; }
+      .msg { font-size: 0.98rem; padding: 8px 11px; max-width: 96%; }
 
       .controls {
         padding: 5px 8px calc(5px + env(safe-area-inset-bottom, 0px));
@@ -833,20 +861,30 @@
       .text-row { gap: 6px; }
       /* min. 16px: evita el auto-zoom de iOS Safari al enfocar el campo,
          que si no descoloca el layout y puede dejar el input tapado. */
-      #text-input { font-size: 16px; padding: 8px 12px; }
-      #send-btn { width: 40px; height: 40px; }
+      #text-input { font-size: 16px; padding: 8px 10px; }
+      #send-btn { width: 38px; height: 38px; }
 
-      #speak-btn { width: 58px; height: 58px; font-size: 1.35rem; }
-      #btn-label { font-size: 0.85rem; }
-      .hint { font-size: 0.68rem; text-align: center; }
+      #speak-btn { width: 52px; height: 52px; font-size: 1.25rem; }
+      #btn-label { font-size: 0.8rem; }
+      .hint { font-size: 0.62rem; text-align: center; line-height: 1.15; }
 
-      .scene-label { font-size: 0.68rem; padding: 3px 9px; }
+      .scene-label { font-size: 0.66rem; padding: 3px 8px; top: 8px; left: 8px; }
 
       .modal-card { padding: 16px 18px; width: min(520px, 94vw); }
       #settings-modal .modal-card:has(#tab-profesor.active) { width: 98vw; height: 94vh; }
 
       .login-card { padding: 22px 20px; }
       .login-card h1 { font-size: 1.35rem; }
+    }
+
+    /* Teléfonos muy estrechos (<= 360px): el rail se queda con lo justo
+       para que los <select> sigan siendo usables y la pizarra no se
+       ahogue. */
+    @media (max-width: 360px) {
+      .config-bar { flex-basis: 40%; min-width: 96px; padding: 6px 5px; gap: 6px; }
+      .config-bar select,
+      #level-test-btn, #help-btn, #settings-btn, #logout-btn { font-size: 0.72rem; padding: 4px 6px; }
+      .col-avatar { height: clamp(120px, 26vh, 220px); }
     }
 
     @keyframes pulse {
