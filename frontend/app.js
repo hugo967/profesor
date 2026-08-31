@@ -170,9 +170,17 @@ let socket = null;
 let recognition = null;
 
 let listening = false;
+// El motor de voz de Chrome/Edge corta la escucha por su cuenta tras unos
+// segundos de silencio AUNQUE recognition.continuous sea true. Cuando eso
+// pasa mientras el alumno sigue en modo escucha (`listening` = true y sin
+// haber pulsado para parar), reanudamos el micro en recognition.onend en
+// vez de enviar. `manualStop` marca la única salida válida: que el alumno
+// vuelva a pulsar el botón del micrófono.
+let manualStop = false;
 // Transcripción acumulada durante una sesión de escucha continua del
 // micrófono (ver initRecognition): se rellena mientras `listening` es
-// true y se envía entera de una vez al parar, no frase a frase.
+// true (a través de posibles reanudaciones automáticas) y se envía entera
+// de una vez SOLO cuando el alumno para manualmente, no frase a frase.
 let voiceTranscript = "";
 let reconnectTimer = null;
 let user_id = null;
@@ -928,10 +936,10 @@ function initRecognition() {
   recognition = new SpeechRecognition();
   recognition.lang = "en-US";
   recognition.interimResults = false;
-  // Micrófono como control manual activo/inactivo: continuous=true evita
-  // que el navegador corte la escucha por una simple pausa/silencio entre
-  // frases. Solo para de escuchar cuando el alumno vuelve a pulsar el
-  // botón (ver click handler más abajo -> recognition.stop()).
+  // continuous=true reduce los cortes por pausas cortas, pero NO garantiza
+  // que el motor no se detenga solo tras un silencio largo. La escucha
+  // continua real la fuerza recognition.onend reanudando mientras el
+  // alumno no haya pulsado para parar (ver manualStop).
   recognition.continuous = true;
   recognition.maxAlternatives = 1;
 
@@ -954,10 +962,35 @@ function initRecognition() {
   };
 
   recognition.onend = () => {
-    // onend llega tanto al parar manualmente (recognition.stop()) como
-    // tras un error del motor de voz: en ambos casos es el punto único
-    // donde se envía, ya con todos los resultados finales entregados.
+    // El motor se ha detenido. Puede ser por: (a) el alumno pulsó el botón
+    // para parar (manualStop=true), (b) corte automático por silencio con
+    // el alumno aún en modo escucha, o (c) un error transitorio.
+    // En los casos (b) y (c) reanudamos: el micro debe seguir abierto
+    // hasta la acción manual, y no se envía nada.
+    if (listening && !manualStop) {
+      try {
+        recognition.start();
+        return;
+      } catch (err) {
+        // start() puede fallar si el motor aún no ha soltado el recurso;
+        // un reintento breve suele bastar.
+        setTimeout(() => {
+          if (listening && !manualStop) {
+            try { recognition.start(); } catch (e) {
+              console.error("No se pudo reanudar el micrófono:", e);
+              listening = false;
+              updateButton();
+            }
+          }
+        }, 250);
+        return;
+      }
+    }
+
+    // Parada manual (o fin definitivo): ahora sí se envía todo lo
+    // acumulado durante la sesión de escucha, de una sola vez.
     listening = false;
+    manualStop = false;
     updateButton();
     if (voiceTranscript) {
       sendText(voiceTranscript, "voice");
@@ -967,8 +1000,24 @@ function initRecognition() {
 
   recognition.onerror = (event) => {
     console.error("Error de reconocimiento:", event.error);
-    // No se actualiza aquí ni el botón ni el envío: el navegador dispara
-    // "end" a continuación de "error", y onend ya se encarga de ambos.
+    // Errores fatales: sin permiso de micrófono o sin dispositivo de
+    // captura. Reanudar en bucle no serviría de nada -> se corta y se
+    // avisa. (El "end" que viene detrás encontrará listening=false y no
+    // reanudará ni enviará.)
+    if (
+      event.error === "not-allowed" ||
+      event.error === "service-not-allowed" ||
+      event.error === "audio-capture"
+    ) {
+      listening = false;
+      manualStop = false;
+      voiceTranscript = "";
+      updateButton();
+      addSystem("⚠️ No se pudo acceder al micrófono (permiso denegado o sin dispositivo)");
+      return;
+    }
+    // El resto (no-speech, network, aborted) son transitorios: onend viene
+    // a continuación y, si el alumno sigue en modo escucha, reanuda.
   };
 }
 
@@ -980,12 +1029,23 @@ if (speakBtn) {
     ensureAudioContext();
     if (!recognition) return;
     if (listening) {
-      recognition.stop();
+      // Única forma de detener la escucha y enviar: esta pulsación.
+      // manualStop evita que recognition.onend reanude el micro.
+      manualStop = true;
+      listening = false;
+      updateButton(); // feedback inmediato aunque 'stop' tarde en cerrar
+      try { recognition.stop(); } catch (e) {}
       return;
     }
     voiceTranscript = "";
-    recognition.start();
+    manualStop = false;
     listening = true;
+    try {
+      recognition.start();
+    } catch (e) {
+      // Ya estaba arrancando: no es un problema.
+      console.error("recognition.start() falló:", e);
+    }
     updateButton();
   });
 }
@@ -994,7 +1054,9 @@ function updateButton() {
   if (!speakBtn || !btnLabel) return;
   speakBtn.classList.toggle("listening", listening);
   speakBtn.textContent = listening ? "🛑" : "🎤";
-  btnLabel.textContent = listening ? "Escuchando… habla en inglés" : "Pulsa para hablar";
+  btnLabel.textContent = listening
+    ? "Escuchando… pulsa 🛑 para enviar"
+    : "Pulsa para hablar";
 }
 
 // ============================================================
