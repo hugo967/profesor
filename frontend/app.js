@@ -629,6 +629,20 @@ function connect() {
     }
 
     if (data.type === "config_ok") {
+      // El backend devuelve la config REAL ya resuelta: al retomar una
+      // conversación desde el Historial mandamos contexto vacío y el
+      // backend responde con el nivel/objetivo guardado en esa sesión.
+      // Sincroniza estado y desplegables para que reflejen la conversación
+      // activa (si no, el próximo mensaje volvería a mandar contexto vacío
+      // y el tutor perdería el hilo).
+      if (data.context) {
+        currentConfig.context = data.context;
+        if (contextSelect) contextSelect.value = data.context;
+      }
+      if (data.level) {
+        currentConfig.level = data.level;
+        if (levelSelect) levelSelect.value = data.level;
+      }
       // Toast flotante en vez de addSystem(): es un aviso menor y frecuente
       // (se dispara cada vez que se cambia nivel/contexto) que no debe
       // dejar un mensaje fijo ocupando sitio en la pizarra.
@@ -1546,14 +1560,12 @@ async function loadSpecificSession(sessionId) {
     currentSessionId = sessionId;
     window.currentSessionId = sessionId;
 
-    // Al cambiar a otra conversación no se conoce (desde aquí) el modo
-    // con el que se dio originalmente, así que el desplegable de
-    // Contexto/Objetivo se resetea al modo "Default" (sin iniciativa)
-    // en vez de dejarlo mostrando el modo de la conversación anterior:
-    // obliga a elegir de nuevo un modo antes de poder seguir hablando.
-    // A diferencia de antes, sí se reenvía la config al backend: al ser
-    // "Default" no proactivo, no dispara ningún tema nuevo encima de la
-    // conversación ya existente, solo sincroniza current_context.
+    // Desde aquí no se conoce el modo con el que se creó la conversación,
+    // así que se manda contexto vacío + el session_id: el backend recupera
+    // el nivel/objetivo guardado en esa sesión y los devuelve en config_ok
+    // (ver ese handler y rehydrate_session_state en el backend), que a su
+    // vez re-sincroniza estos desplegables con el modo real. Así el tutor
+    // retoma el hilo exacto sin re-disparar ningún tema.
     if (contextSelect) contextSelect.value = "";
     currentConfig.context = "";
     sendConfig();
