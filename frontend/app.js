@@ -761,6 +761,19 @@ if (levelSelect) {
 if (contextSelect) {
   contextSelect.addEventListener("change", () => {
     currentConfig.context = contextSelect.value;
+
+    // Cambiar de modo es empezar de cero con el rol nuevo: el tutor no debe
+    // arrastrar el tema anterior. Se suelta la sesión actual (el backend
+    // también la invalida y descarta su historial en memoria al recibir el
+    // config con el contexto nuevo) y se limpia la pizarra, igual que
+    // "Nuevo Chat". Sin soltar el session_id, el siguiente mensaje lo
+    // reenviaría y el backend volvería a enganchar la conversación vieja.
+    stopCurrentAudio();
+    hideProactiveLoading();
+    currentSessionId = null;
+    window.currentSessionId = null;
+    if (chatEl) chatEl.innerHTML = "";
+
     sendConfig();
   });
 }
