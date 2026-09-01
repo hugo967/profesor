@@ -720,7 +720,17 @@ function scheduleReconnect() {
 
 function sendConfig() {
   if (socket && socket.readyState === WebSocket.OPEN) {
-    socket.send(JSON.stringify({ type: "config", config: currentConfig }));
+    // session_id: si el WebSocket se cae a media conversación (típico en
+    // móvil mientras se graba voz y se sube a /api/transcribe) y reconecta,
+    // el onopen reenvía la config. El backend arranca cada conexión sin
+    // estado, así que sin este dato trataría el "config" como "entrar de
+    // nuevo al modo" y generaría un tema del día nuevo, reiniciando el
+    // chat. Mandándole la sesión abierta, la retoma en vez de reiniciarla.
+    socket.send(JSON.stringify({
+      type: "config",
+      config: currentConfig,
+      session_id: currentSessionId,
+    }));
   }
 }
 
