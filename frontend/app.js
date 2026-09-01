@@ -210,6 +210,14 @@ const MAX_RECORDING_MS = 45000;
 // orientar a Whisper hacia el vocabulario que toca.
 let lastTutorMessage = "";
 let reconnectTimer = null;
+// Reconexión del WebSocket: backoff exponencial suave (2.5s → 20s máx) para
+// no martillear un backend caído, y avisos de sistema una sola vez por corte
+// (no en cada reintento). Se reinicia al reconectar (ver socket.onopen).
+const RECONNECT_DELAY_MIN = 2500;
+const RECONNECT_DELAY_MAX = 20000;
+let reconnectDelay = RECONNECT_DELAY_MIN;
+let wasConnected = false;
+let disconnectNotified = false;
 let user_id = null;
 let currentSessionId = null;
 window.currentSessionId = null;
@@ -588,7 +596,14 @@ function connect() {
 
   socket.onopen = () => {
     setStatus("Conectado", true);
-    addSystem("Conectado al tutor 🎧");
+    // "Conectado" solo se anuncia en la primera conexión o tras un corte
+    // real (wasConnected): en una reconexión inmediata que ni se llegó a
+    // notar, no ensucia la pizarra.
+    if (!wasConnected) addSystem("Conectado al tutor 🎧");
+    else if (disconnectNotified) addSystem("Conexión recuperada ✅");
+    wasConnected = true;
+    disconnectNotified = false;
+    reconnectDelay = RECONNECT_DELAY_MIN;
     if (currentConfig.level || currentConfig.context) sendConfig();
     if (activeExercise) {
       socket.send(JSON.stringify({ type: "exercise_start", exercise: activeExercise }));
@@ -719,7 +734,13 @@ function connect() {
 
   socket.onclose = () => {
     setStatus("Desconectado", false);
-    addSystem("Conexión perdida. Reintentando…");
+    // El aviso de "conexión perdida" se da UNA sola vez por corte, no en
+    // cada reintento fallido: si no, un backend caído llenaría el chat de
+    // mensajes de sistema cada pocos segundos.
+    if (!disconnectNotified) {
+      addSystem("Conexión perdida. Reintentando…");
+      disconnectNotified = true;
+    }
     hideProactiveLoading();
     scheduleReconnect();
   };
@@ -729,7 +750,8 @@ function connect() {
 
 function scheduleReconnect() {
   clearTimeout(reconnectTimer);
-  reconnectTimer = setTimeout(connect, 2500);
+  reconnectTimer = setTimeout(connect, reconnectDelay);
+  reconnectDelay = Math.min(reconnectDelay * 2, RECONNECT_DELAY_MAX);
 }
 
 function sendConfig() {
