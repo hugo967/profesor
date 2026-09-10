@@ -495,30 +495,16 @@
       z-index: 0;
     }
 
-    .avatar-media {
+    /* Avatar 3D (avatar3d.js): la propia cámara de Three.js encuadra la
+       cabeza sea cual sea la proporción real del contenedor. Si WebGL o
+       el .glb fallan, el <canvas> queda vacío y se ve el fondo
+       difuminado del aula (.avatar-wrap::before). */
+    .avatar3d-canvas {
       position: relative;
       z-index: 1;
-      /* callado.png/hablando.mp4 tienen mucho margen de croma verde a los
-         lados del busto (el sujeto real ocupa ~37% del ancho pero ~96%
-         del alto del fotograma). Fijar esta proporción + object-fit:cover
-         hace que el recuadro del avatar se ajuste al busto en vez de al
-         fotograma completo (que dejaría casi todo hueco tras quitar el
-         verde), y cover recorta el sobrante lateral (ya transparente)
-         sin recortar cabeza ni hombros. */
-      aspect-ratio: 616 / 902;
-      max-width: 92%;
-      max-height: 92%;
-      width: auto;
-      height: auto;
+      width: 92%;
+      height: 92%;
       display: block;
-      object-fit: cover;
-      object-position: center;
-      /* Chroma key en CSS puro: usa el filtro SVG #chroma-key-green
-         (definido al final de <body>) para detectar el "verdor" de cada
-         píxel (predominio del canal G sobre R y B, propio del croma
-         verde de callado.png/hablando.mp4) y convertirlo en
-         transparente, dejando intacto el resto de la imagen/vídeo. */
-      filter: url(#chroma-key-green);
     }
 
     .classroom-floor {
@@ -985,33 +971,6 @@
 </head>
 <body>
 
-  <!-- Filtro SVG de chroma key (croma verde) usado por .avatar-media
-       (ver <style> -> filter: url(#chroma-key-green)). No se muestra
-       nada aquí directamente: solo define el filtro para que la imagen
-       y el vídeo del avatar lo referencien desde el CSS. -->
-  <svg width="0" height="0" style="position: absolute; overflow: hidden;" aria-hidden="true" focusable="false">
-    <defs>
-      <filter id="chroma-key-green" color-interpolation-filters="sRGB">
-        <!-- "Verdor" de cada píxel: predominio del canal G sobre R y B.
-             Fondo verde -> valor alto; piel/ropa/pelo -> valor ~0. -->
-        <feColorMatrix in="SourceGraphic" type="matrix"
-          values="0  0  0  0  0
-                   0  0  0  0  0
-                   0  0  0  0  0
-                  -1  2 -1  0  0"
-          result="greenness" />
-        <!-- Umbral: verdor alto -> alfa 0 (transparente); verdor bajo
-             -> alfa 1 (opaco). El margen entre ambos da un borde suave
-             antialiaseado en vez de un recorte brusco. -->
-        <feComponentTransfer in="greenness" result="chromaMask">
-          <feFuncA type="linear" slope="-4" intercept="2.5" />
-        </feComponentTransfer>
-        <!-- Aplica esa máscara de alfa a los colores originales. -->
-        <feComposite in="SourceGraphic" in2="chromaMask" operator="in" />
-      </filter>
-    </defs>
-  </svg>
-
   <!-- Pantalla de inicio de sesión por usuario y contraseña -->
   <!-- Sin autorregistro: las cuentas las crea el profesor desde su panel
        (Vista Profesor → Crear Nuevo Alumno). -->
@@ -1124,8 +1083,7 @@
       <!-- Columna derecha: Aula con el avatar -->
       <div class="col col-avatar">
         <div class="avatar-wrap">
-          <img id="avatar-idle" class="avatar-media" src="./callado.png" alt="Avatar del tutor">
-          <video id="avatar-talking" class="avatar-media hidden" src="./hablando.mp4" muted loop playsinline></video>
+          <canvas id="avatar3d-canvas" class="avatar3d-canvas" aria-label="Avatar del tutor (3D)"></canvas>
           <span class="scene-label">🗣️ Avatar</span>
         </div>
         <div class="classroom-floor"></div>
@@ -1506,6 +1464,17 @@
 
   <!-- Chart.js vía CDN (jsDelivr, gratuito) -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+  <!-- Import map para el avatar 3D (avatar3d.js): resuelve el
+       especificador bare "three" a la misma versión/CDN que usa
+       GLTFLoader internamente (ver avatar3d.js), sin build. -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js"
+    }
+  }
+  </script>
 
   <script type="module" src="app.js"></script>
 

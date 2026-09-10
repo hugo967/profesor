@@ -1,0 +1,145 @@
+<!doctype html>
+<!--
+  Página de PRUEBA local para ver model.glb con avatar3d.js sin levantar el
+  backend. NO se despliega (no la referencia nadie). Borrar cuando ya no
+  haga falta.
+
+  Uso:  cd frontend  &&  python -m http.server 8000
+        abrir http://localhost:8000/avatar3d-preview.html
+
+  - "Elegir audio…": reproduce un MP3/WAV local enrutado por un AnalyserNode
+    igual que hace app.js con el TTS -> prueba REAL del lip-sync por bandas.
+  - Slider / "Hablar (auto)": mueven la boca por el camino escalar simple
+    (sin analizador), como cuando Web Audio está bloqueada.
+-->
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Preview avatar 3D — model.glb</title>
+  <style>
+    body { margin: 0; font-family: system-ui, sans-serif; background: #e8dfd8; color: #3a2a12; }
+    .stage {
+      width: 100vw; height: 68vh;
+      background: linear-gradient(180deg, #efe8df, #ddcfc0);
+      display: flex; align-items: center; justify-content: center;
+    }
+    #avatar3d-canvas { width: 42%; height: 92%; display: block; }
+    @media (max-width: 700px) { #avatar3d-canvas { width: 82%; } }
+    .panel { padding: 14px 20px; }
+    .row { margin: 9px 0; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+    input[type=range] { flex: 1; min-width: 160px; }
+    button { font: inherit; padding: 6px 14px; cursor: pointer; }
+    #log { font-family: ui-monospace, monospace; font-size: 12px; white-space: pre-wrap; opacity: .8; }
+  </style>
+  <script type="importmap">
+  { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
+  </script>
+</head>
+<body>
+  <div class="stage">
+    <canvas id="avatar3d-canvas" aria-label="Avatar del tutor (3D)"></canvas>
+  </div>
+  <div class="panel">
+    <div class="row">
+      <input id="file" type="file" accept="audio/*">
+      <button id="play">▶︎ Reproducir</button>
+      <button id="stopA">■ Parar</button>
+    </div>
+    <div class="row">
+      <label for="vol">Volumen simulado (camino escalar)</label>
+      <input id="vol" type="range" min="0" max="1" step="0.01" value="0">
+      <span id="volval">0.00</span>
+      <button id="talk">▶︎ Hablar (auto)</button>
+      <button id="stop">■</button>
+    </div>
+    <div id="log">cargando…</div>
+  </div>
+
+  <script type="module">
+    const log = (m) => { document.getElementById("log").textContent = m; };
+    const canvas = document.getElementById("avatar3d-canvas");
+    let Avatar3D = null;
+
+    try {
+      const mod = await import("./avatar3d.js");
+      const info = await mod.mountAvatar3D(canvas);
+      Avatar3D = mod;
+      log("montado ✓  " + JSON.stringify(info));
+    } catch (err) {
+      log("ERROR al montar: " + (err?.message || err));
+      console.error(err);
+    }
+
+    // ---- camino REAL: audio local -> AnalyserNode -> avatar ----
+    let ac = null, analyser = null, srcNode = null, audioEl = null, rafReal = null;
+    const fileInput = document.getElementById("file");
+
+    function stopReal() {
+      if (rafReal) cancelAnimationFrame(rafReal);
+      rafReal = null;
+      if (audioEl) { audioEl.pause(); }
+      if (Avatar3D) Avatar3D.setMouthOpen(0);
+    }
+
+    document.getElementById("play").addEventListener("click", async () => {
+      const f = fileInput.files?.[0];
+      if (!f || !Avatar3D) return;
+      stopReal();
+      if (!ac) ac = new (window.AudioContext || window.webkitAudioContext)();
+      await ac.resume();
+      audioEl = new Audio(URL.createObjectURL(f));
+      audioEl.crossOrigin = "anonymous";
+      srcNode = ac.createMediaElementSource(audioEl);
+      analyser = ac.createAnalyser();
+      analyser.fftSize = 256; // igual que app.js
+      srcNode.connect(analyser);
+      analyser.connect(ac.destination);
+      const buf = new Uint8Array(analyser.fftSize);
+      const tick = () => {
+        analyser.getByteTimeDomainData(buf);
+        let sum = 0;
+        for (let i = 0; i < buf.length; i++) { const v = (buf[i] - 128) / 128; sum += v * v; }
+        const vol = Math.min(1, Math.sqrt(sum / buf.length) * 2.4);
+        Avatar3D.setMouthOpen(vol, analyser);
+        rafReal = requestAnimationFrame(tick);
+      };
+      audioEl.onended = stopReal;
+      await audioEl.play();
+      tick();
+      log("reproduciendo " + f.name);
+    });
+    document.getElementById("stopA").addEventListener("click", stopReal);
+
+    // ---- camino escalar simple ----
+    const vol = document.getElementById("vol");
+    const volval = document.getElementById("volval");
+    const set = (v) => {
+      vol.value = v;
+      volval.textContent = (+v).toFixed(2);
+      if (Avatar3D) Avatar3D.setMouthOpen(+v);
+    };
+    vol.addEventListener("input", () => set(vol.value));
+
+    let talkRaf = null;
+    document.getElementById("talk").addEventListener("click", () => {
+      if (talkRaf) return;
+      const t0 = performance.now();
+      const tick = () => {
+        const t = (performance.now() - t0) / 1000;
+        const v = Math.max(0,
+          (0.55 + 0.45 * Math.sin(t * 2.3)) *
+          Math.abs(Math.sin(t * 13) * 0.7 + Math.sin(t * 27) * 0.3)) * 0.5;
+        set(v);
+        talkRaf = requestAnimationFrame(tick);
+      };
+      tick();
+    });
+    document.getElementById("stop").addEventListener("click", () => {
+      if (talkRaf) cancelAnimationFrame(talkRaf);
+      talkRaf = null;
+      set(0);
+    });
+  </script>
+</body>
+</html>

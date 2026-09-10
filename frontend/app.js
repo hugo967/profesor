@@ -232,8 +232,7 @@ const chatEl = document.getElementById("chat");
 const statusEl = document.getElementById("status");
 const speakBtn = document.getElementById("speak-btn");
 const btnLabel = document.getElementById("btn-label");
-const avatarIdleEl = document.getElementById("avatar-idle");
-const avatarTalkingEl = document.getElementById("avatar-talking");
+const avatar3dCanvasEl = document.getElementById("avatar3d-canvas");
 const textInput = document.getElementById("text-input");
 const sendBtn = document.getElementById("send-btn");
 const levelSelect = document.getElementById("level-select");
@@ -249,47 +248,23 @@ const helpCloseBtn = document.getElementById("help-close");
 const newChatBtn = document.getElementById("new-chat-btn");
 
 // ============================================================
-// Avatar 2D (imagen fija en reposo / vídeo en bucle al hablar)
+// Avatar 3D (WebGL / Three.js — ver avatar3d.js)
 // ============================================================
-// Ligeramente por debajo de 1.0: a velocidad normal los gestos del vídeo
-// se veían demasiado rápidos/nerviosos: se ven más naturales y pausados
-// un poco ralentizados.
-const AVATAR_VIDEO_PLAYBACK_RATE = 0.6;
-if (avatarTalkingEl) avatarTalkingEl.playbackRate = AVATAR_VIDEO_PLAYBACK_RATE;
+// El <canvas> vive siempre en index.html; aquí solo se monta el render.
+// Carga perezosa con red de seguridad: si el módulo, el .glb o WebGL
+// fallan, el chat sigue funcionando (se queda sin cara, con el fondo
+// difuminado del aula). El lip-sync se alimenta desde monitorVolume().
+let Avatar3D = null;
 
-// Volumen (0-1, salida de getAudioVolume()) por debajo del cual se
-// considera que la profesora no está vocalizando en ese instante —
-// pausas y silencios dentro del propio audio, aunque el <audio> siga
-// técnicamente en reproducción. Mismo umbral ya calibrado antes para
-// distinguir "boca cerrada" del volumen real de la voz.
-const AVATAR_SILENCE_THRESHOLD = 0.05;
-
-let avatarSpeaking = false;
-
-// Cambia el elemento visible (vídeo/imagen) SIN tocar nunca currentTime:
-// al detectar silencio, avatarTalkingEl.pause() lo deja congelado en el
-// fotograma exacto en el que estaba; al retomar la voz, play() continúa
-// desde ahí. Así, aunque la profesora haga varias pausas al hablar, se ve
-// como una única toma continua en vez de un vídeo que se reinicia cada
-// vez. El único sitio que reinicia currentTime a 0 es el "ended" del
-// audio (ver playAudio), que marca el final real de la frase.
-function setAvatarSpeaking(speaking) {
-  if (speaking === avatarSpeaking) return;
-  avatarSpeaking = speaking;
-  if (speaking) {
-    if (avatarIdleEl) avatarIdleEl.classList.add("hidden");
-    if (avatarTalkingEl) {
-      avatarTalkingEl.classList.remove("hidden");
-      avatarTalkingEl.playbackRate = AVATAR_VIDEO_PLAYBACK_RATE;
-      avatarTalkingEl.play().catch((err) => console.error("No se pudo reproducir el vídeo del avatar:", err));
-    }
-  } else {
-    if (avatarTalkingEl) {
-      avatarTalkingEl.pause();
-      avatarTalkingEl.classList.add("hidden");
-    }
-    if (avatarIdleEl) avatarIdleEl.classList.remove("hidden");
-  }
+if (avatar3dCanvasEl) {
+  import("./avatar3d.js")
+    .then((mod) => mod.mountAvatar3D(avatar3dCanvasEl).then(() => mod))
+    .then((mod) => {
+      Avatar3D = mod;
+    })
+    .catch((err) => {
+      console.error("No se pudo iniciar el avatar 3D:", err);
+    });
 }
 
 // ---- Web Audio API: mide el volumen real del audio en reproducción ----
@@ -349,7 +324,11 @@ function connectAnalyser(audio) {
 // reaccione "al instante" a la forma de onda real, sin necesidad de un
 // setInterval aparte.
 function monitorVolume() {
-  setAvatarSpeaking(getAudioVolume() >= AVATAR_SILENCE_THRESHOLD);
+  const volume = getAudioVolume();
+  // Al avatar 3D se le pasan el volumen RMS y el AnalyserNode: hace su
+  // propio análisis para el lip-sync (ver avatar3d.js). Si aún no ha
+  // cargado, este frame simplemente se pierde.
+  if (Avatar3D) Avatar3D.setMouthOpen(volume, analyser);
   volumeMonitorHandle = requestAnimationFrame(monitorVolume);
 }
 
@@ -359,8 +338,8 @@ function startVolumeMonitor() {
 }
 
 // forceIdle=false se usa solo al interrumpir un audio con uno nuevo: corta
-// la monitorización del audio viejo sin forzar la imagen fija, para que si
-// el nuevo audio ya está hablando no haya un parpadeo de por medio.
+// la monitorización del audio viejo sin cerrar la boca, para que si el
+// nuevo audio ya está hablando no haya un parpadeo de por medio.
 function stopVolumeMonitor({ forceIdle = true } = {}) {
   if (volumeMonitorHandle) {
     cancelAnimationFrame(volumeMonitorHandle);
@@ -368,7 +347,7 @@ function stopVolumeMonitor({ forceIdle = true } = {}) {
   }
   analyser = null;
   analyserData = null;
-  if (forceIdle) setAvatarSpeaking(false);
+  if (forceIdle && Avatar3D) Avatar3D.setMouthOpen(0);
 }
 
 // ============================================================
@@ -517,7 +496,7 @@ let currentAvatarAudio = null;
 // descarga/decodificación en curso del dato base64.
 // forceIdle=false se usa solo al interrumpir un audio con uno nuevo (ver
 // playAudio): si el audio nuevo ya trae voz, su propio monitor de volumen
-// lo detectará enseguida, sin parpadeo de por medio a la imagen fija.
+// lo detectará enseguida, sin que la boca del avatar llegue a cerrarse.
 function stopCurrentAudio({ forceIdle = true } = {}) {
   if (currentAvatarAudio) {
     currentAvatarAudio.onpause = null;
@@ -529,10 +508,6 @@ function stopCurrentAudio({ forceIdle = true } = {}) {
     currentAvatarAudio = null;
   }
   stopVolumeMonitor({ forceIdle });
-  // Corte duro (no una simple interrupción por un audio nuevo): al igual
-  // que el final natural de una frase, deja el vídeo listo desde el
-  // principio para la próxima vez que hable.
-  if (forceIdle && avatarTalkingEl) avatarTalkingEl.currentTime = 0;
 }
 
 function playAudio(base64) {
@@ -545,35 +520,22 @@ function playAudio(base64) {
 
   // "pause" cubre tanto el final natural (el navegador siempre dispara
   // "pause" justo antes de "ended") como cualquier corte prematuro: en
-  // cualquier caso, vuelta inmediata e imperceptible a la imagen fija.
+  // cualquier caso, cierre inmediato de la boca del avatar.
   const backToIdle = () => {
     stopVolumeMonitor();
     if (currentAvatarAudio === audio) currentAvatarAudio = null;
   };
   audio.onpause = backToIdle;
-  // "ended" (fin real de la frase, nunca una simple pausa por silencio o
-  // por interrupción) es el único momento en el que el vídeo se rebobina:
-  // así la siguiente vez que hable arranca limpio desde el principio en
-  // vez de seguir donde se quedó una respuesta anterior. "pause" ya se ha
-  // encargado de ocultar el vídeo justo antes (el navegador siempre
-  // dispara "pause" antes de "ended").
-  audio.onended = () => {
-    if (avatarTalkingEl) avatarTalkingEl.currentTime = 0;
-  };
   audio.onerror = () => {
     console.error("Error al reproducir audio");
     backToIdle();
   };
 
-  // Mientras haya analizador, es el volumen real (ver monitorVolume) el
-  // que decide, frame a frame, si se ve el vídeo o la imagen fija — no el
-  // simple hecho de que el <audio> esté en estado "playing". Sin Web
-  // Audio disponible (navegador muy antiguo o API bloqueada), se cae al
-  // comportamiento anterior: vídeo mientras el audio esté sonando.
+  // El lip-sync se alimenta del volumen real (ver monitorVolume). Sin Web
+  // Audio disponible (navegador muy antiguo o API bloqueada) no hay
+  // lip-sync, pero el audio sigue sonando igual.
   if (connectAnalyser(audio)) {
     startVolumeMonitor();
-  } else {
-    audio.onplaying = () => setAvatarSpeaking(true);
   }
 
   audio.play().catch((err) => {
