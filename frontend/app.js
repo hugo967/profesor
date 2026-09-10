@@ -226,6 +226,11 @@ window.activeExercise = null;
 let activeMoodleExercise = null;
 window.activeMoodleExercise = null;
 const currentConfig = { level: "", context: "" };
+// Burbuja del tutor de la respuesta en curso: cuando el backend trocea la
+// respuesta en segmentos (ver onmessage "audio_segment"), el primero abre
+// la burbuja y los siguientes van concatenando su texto a esta misma. Se
+// pone a null al cerrar la respuesta (final) o al interrumpir.
+let currentTutorMsgEl = null;
 
 // ---------- DOM ----------
 const chatEl = document.getElementById("chat");
@@ -354,12 +359,13 @@ function stopVolumeMonitor({ forceIdle = true } = {}) {
 // Chat
 // ============================================================
 function addMessage(role, text) {
-  if (!chatEl) return;
+  if (!chatEl) return null;
   const div = document.createElement("div");
   div.className = "msg " + role;
   div.textContent = text;
   chatEl.appendChild(div);
   chatEl.scrollTop = chatEl.scrollHeight;
+  return div;
 }
 
 function addSystem(text) {
@@ -489,15 +495,29 @@ function hideProactiveLoading() {
 // "pause" no interfiera con el estado del avatar del audio nuevo.
 let currentAvatarAudio = null;
 
+// Cola de segmentos de audio TTS. El backend puede trocear una respuesta
+// (1ª frase + resto) para que el avatar empiece a hablar antes; los
+// segmentos se reproducen EN ORDEN, cada uno con su propio análisis para
+// el lip-sync. Interrumpir (respuesta nueva, Nuevo Chat, cambio de modo,
+// abrir otra sesión) vacía la cola.
+let audioQueue = [];
+let audioQueueActive = false;
+
+function clearAudioQueue() {
+  audioQueue = [];
+  audioQueueActive = false;
+}
+
 // Corta en seco el audio TTS que estuviera sonando (o todavía cargando/
-// decodificando, aunque no haya llegado a sonar): quita los listeners
-// antes de pausar para que su "pause" no dispare backToIdle() dos veces
-// ni interfiera con un audio nuevo, y limpia src para abandonar cualquier
-// descarga/decodificación en curso del dato base64.
+// decodificando, aunque no haya llegado a sonar) y vacía la cola de
+// segmentos pendientes: quita los listeners antes de pausar para que su
+// "pause" no dispare el avance de cola ni interfiera con un audio nuevo,
+// y limpia src para abandonar cualquier descarga/decodificación en curso.
 // forceIdle=false se usa solo al interrumpir un audio con uno nuevo (ver
-// playAudio): si el audio nuevo ya trae voz, su propio monitor de volumen
-// lo detectará enseguida, sin que la boca del avatar llegue a cerrarse.
+// playAudio / audio_segment): si el audio nuevo ya trae voz, su propio
+// monitor de volumen lo detectará enseguida, sin que la boca se cierre.
 function stopCurrentAudio({ forceIdle = true } = {}) {
+  clearAudioQueue();
   if (currentAvatarAudio) {
     currentAvatarAudio.onpause = null;
     currentAvatarAudio.onended = null;
@@ -507,41 +527,61 @@ function stopCurrentAudio({ forceIdle = true } = {}) {
     currentAvatarAudio.src = "";
     currentAvatarAudio = null;
   }
+  currentTutorMsgEl = null;
   stopVolumeMonitor({ forceIdle });
 }
 
-function playAudio(base64) {
-  if (!base64) return;
-
-  stopCurrentAudio({ forceIdle: false });
+// Reproduce el siguiente segmento en cola. Al acabar uno encadena el
+// siguiente SIN cerrar la boca del avatar entre medias: solo la cierra
+// (forceIdle) cuando la cola queda vacía.
+function playNextInQueue() {
+  const base64 = audioQueue.shift();
+  if (!base64) {
+    audioQueueActive = false;
+    return;
+  }
+  audioQueueActive = true;
 
   const audio = new Audio("data:audio/mpeg;base64," + base64);
   currentAvatarAudio = audio;
 
   // "pause" cubre tanto el final natural (el navegador siempre dispara
-  // "pause" justo antes de "ended") como cualquier corte prematuro: en
-  // cualquier caso, cierre inmediato de la boca del avatar.
-  const backToIdle = () => {
-    stopVolumeMonitor();
+  // "pause" justo antes de "ended") como cualquier corte prematuro.
+  const advance = () => {
     if (currentAvatarAudio === audio) currentAvatarAudio = null;
+    stopVolumeMonitor({ forceIdle: audioQueue.length === 0 });
+    playNextInQueue();
   };
-  audio.onpause = backToIdle;
+  audio.onpause = advance;
   audio.onerror = () => {
     console.error("Error al reproducir audio");
-    backToIdle();
+    advance();
   };
 
   // El lip-sync se alimenta del volumen real (ver monitorVolume). Sin Web
   // Audio disponible (navegador muy antiguo o API bloqueada) no hay
   // lip-sync, pero el audio sigue sonando igual.
-  if (connectAnalyser(audio)) {
-    startVolumeMonitor();
-  }
+  if (connectAnalyser(audio)) startVolumeMonitor();
 
   audio.play().catch((err) => {
     console.error("Error al reproducir audio:", err);
-    backToIdle();
+    advance();
   });
+}
+
+function enqueueAudio(base64) {
+  if (!base64) return;
+  audioQueue.push(base64);
+  if (!audioQueueActive) playNextInQueue();
+}
+
+// Compatibilidad: las respuestas NO troceadas (tema proactivo, aviso de
+// modo por defecto) siguen llegando como un único {text, audio_base64}.
+// Interrumpe lo que hubiera sonando y reproduce este audio como segmento
+// único.
+function playAudio(base64) {
+  stopCurrentAudio({ forceIdle: false });
+  enqueueAudio(base64);
 }
 
 // ============================================================
@@ -684,6 +724,30 @@ function connect() {
       hideTypingIndicator();
       hideProactiveLoading();
       addSystem("⚠️ " + data.message);
+      return;
+    }
+
+    // Respuesta del tutor troceada en segmentos (1ª frase + resto) para que
+    // el avatar arranque antes. seq 0 abre burbuja nueva (e interrumpe lo
+    // anterior); los siguientes concatenan su texto a la misma burbuja. El
+    // audio de cada segmento se encola y se reproduce en orden. "final"
+    // marca el último segmento de esta respuesta.
+    if (data.type === "audio_segment") {
+      hideTypingIndicator();
+      hideProactiveLoading();
+      const segText = data.text || "";
+      if (data.seq === 0 || !currentTutorMsgEl) {
+        stopCurrentAudio({ forceIdle: false });
+        currentTutorMsgEl = addMessage("tutor", segText);
+        lastTutorMessage = segText;
+      } else if (segText) {
+        currentTutorMsgEl.textContent +=
+          (currentTutorMsgEl.textContent ? " " : "") + segText;
+        lastTutorMessage = (lastTutorMessage ? lastTutorMessage + " " : "") + segText;
+        if (chatEl) chatEl.scrollTop = chatEl.scrollHeight;
+      }
+      enqueueAudio(data.audio_base64);
+      if (data.final) currentTutorMsgEl = null;
       return;
     }
 
