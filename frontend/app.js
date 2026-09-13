@@ -606,7 +606,15 @@ function connect() {
     wasConnected = true;
     disconnectNotified = false;
     reconnectDelay = RECONNECT_DELAY_MIN;
-    if (currentConfig.level || currentConfig.context) sendConfig();
+    // Orden importante: si hay un Reto o una práctica de Moodle activos, se
+    // avisa de eso ANTES de mandar "config". El backend arranca cada
+    // conexión con active_exercise/active_moodle_exercise a None; si
+    // "config" se procesara primero (sin session_id que retomar, p. ej. un
+    // Reto arrancado antes de enviar ningún mensaje en ese modo) lo trataría
+    // como un cambio real de contexto y dispararía un tema propuesto nuevo
+    // por su cuenta sobre una conversación que en realidad es el Reto en
+    // curso. Mandando el reto/práctica primero, cuando "config" llegue el
+    // backend ya tiene el estado y no dispara nada de eso.
     if (activeExercise) {
       socket.send(JSON.stringify({ type: "exercise_start", exercise: activeExercise }));
     }
@@ -617,6 +625,7 @@ function connect() {
       // reinicia la práctica en vez de continuar por donde iba.
       socket.send(JSON.stringify({ type: "moodle_exercise_start", exercise_id: activeMoodleExercise.id }));
     }
+    if (currentConfig.level || currentConfig.context) sendConfig();
   };
 
   socket.onmessage = (event) => {
@@ -1372,8 +1381,8 @@ function updateButton() {
 // las funciones de carga de datos que ese script invoca.
 
 function getCurrentUser() {
-  if (typeof user_id !== "undefined" && user_id) return user_id;
-  return localStorage.getItem('user_id') || username || localStorage.getItem('username') || "alumno1";
+  if (user_id) return user_id;
+  return localStorage.getItem('user_id') || username || localStorage.getItem('username') || "";
 }
 
 function updateTeacherTabVisibility() {
@@ -1387,27 +1396,6 @@ function updateTeacherTabVisibility() {
 }
 
 updateTeacherTabVisibility();
-
-async function loadUserProgress() {
-  const current_user = getCurrentUser();
-  const progressContent = document.getElementById("progressContent");
-  if (!progressContent) return;
-
-  try {
-    const res = await fetch(apiUrl("/api/progress"), {
-      headers: { "X-User-Id": current_user }
-    });
-    const data = await res.json();
-    if (data && data.length > 0) {
-      progressContent.innerHTML = `<ul>` + data.map(p => `<li>Ejercicio ID: ${p.exercise_id} - Estado: ${p.status} - Puntuación: ${p.score || 0}</li>`).join("") + `</ul>`;
-    } else {
-      progressContent.innerHTML = "<p>No hay registros de progreso todavía para " + current_user + ".</p>";
-    }
-  } catch (err) {
-    console.error("Error cargando progreso:", err);
-    progressContent.innerHTML = "<p>Error al cargar el progreso.</p>";
-  }
-}
 
 async function loadChatHistory() {
   const current_user = getCurrentUser();

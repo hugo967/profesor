@@ -215,13 +215,45 @@ lo único que se ve si WebGL o el `.glb` fallan (el `import("./avatar3d.js")` ti
   (`jawOpen`, `mouthOpen`, `eyeBlinkLeft`, visemas `viseme_*`) — misma familia que
   Ready Player Me, NO Character Creator. Sin compresión meshopt/draco (GLTFLoader lo
   carga tal cual). Verificado parseando los chunks del GLB con un script Node.
-- **Animación idle horneada**: el `.glb` trae `avaturn_animation` (~8s, en bucle vía
-  `AnimationMixer`) que ya anima cuerpo entero + cara: parpadeo, micro-miradas,
-  cejas, respiración por la columna, balanceo de brazos/dedos. **El módulo NO hace
-  nada de eso por código** (a diferencia de los avatares anteriores) — solo
-  superpone el lip-sync encima, sobreescribiendo los influences de boca después de
-  cada `mixer.update()`. Comprobado que la animación toca `jawOpen` a ≤0.04 y ningún
-  `viseme_*`, y que `Hips` no se traslada (idle en el sitio).
+- **Animación idle + gestos de cuerpo (Mixamo)**: el cuerpo ya NO usa la animación
+  horneada del `.glb` — usa clips sueltos de Mixamo (`.fbx`, en `frontend/avatar/`):
+  `Idle.fbx` (reposo/respirar, sustituye a la idle del `.glb`), `idle_cambio.fbx`
+  (rompe la rigidez cada 10-15s, un solo pase) y `talking1/2/3.fbx` (variaciones de
+  gesto mientras el tutor habla). La primera se elige **totalmente al azar**
+  (`startTalkingAnimation`); si el turno dura más que un pase del gesto (respuestas
+  largas), cada uno se reproduce una sola vez (`loopOnce`) y al terminar
+  (`onGestureFinished`) se cruza a otro distinto —nunca el que acaba de terminar—
+  con el mismo crossfade de `GESTURE_CROSSFADE_SECONDS`, así que van rotando
+  mientras siga habiendo audio en cola (ver `pickTalkingAction`). Con un solo
+  gesto de hablar cargado (fallo de red en los otros dos) no hay entre qué rotar:
+  se queda en bucle simple, como antes. Los 4 `.fbx` se remapean (quitar prefijo `mixamorigN` de
+  cada hueso, quitar la pista `.position` de `Hips` por el desajuste cm/metros con
+  el `.glb`) para casar con el esqueleto del `.glb` sin retargeting completo.
+  `Idle.fbx` se pide **en paralelo** con el `.glb` (para no dejar al avatar en pose
+  de bind mientras carga); `idle_cambio`+`talking1-3` se cargan después, en segundo
+  plano, sin bloquear el primer frame.
+  - **Máquina de estados simple**: idle / idle_cambio / talking1-3 son "compañeros"
+    del mismo canal de cuerpo — en todo momento hay exactamente uno activo y como
+    mucho otro cruzando (`crossFadeBody`: fadeOut explícito del saliente + fadeIn
+    explícito del entrante, misma duración, mismo instante). Al ser un crossfade
+    simétrico entre pares, la suma de pesos es 1 en todo momento **por
+    construcción**, sin ningún cálculo especial.
+  - **Cara aparte**: `Idle.fbx` es mocap puro (sin blendshapes), así que el
+    parpadeo/cejas/micro-mirada del `.glb` horneado se conserva en un canal
+    independiente (`actionFace`, clip clonado filtrando solo pistas
+    `.morphTargetInfluences`), siempre a peso 1, sin relación con la máquina de
+    estados de cuerpo (fallback: si `Idle.fbx` no carga, se usa la idle completa
+    del `.glb` — cuerpo + cara en una sola acción, como antes).
+  - El lip-sync sigue sin tocarse: se superpone encima sobreescribiendo los
+    influences de boca después de cada `mixer.update()`.
+  - **Gotcha de three.js a recordar**: `AnimationAction.setEffectiveWeight(w)` fija
+    `action.weight = w` **para siempre** (no solo el valor leído una vez) — y
+    `_updateWeight()` calcula cada frame `weight = action.weight * interpolanteDelFade`.
+    Poner `setEffectiveWeight(0)` "para que arranque limpio" deja `action.weight`
+    clavado a 0 y ningún `fadeIn()` posterior puede volver a subirlo (0 × cualquier
+    cosa = 0): el gesto queda mudo para siempre. No hace falta tocar el peso a mano
+    en ningún sitio de este sistema; el valor de fábrica (1) más `fadeIn`/`fadeOut`
+    ya hacen lo correcto.
 - **Lip-sync** (`updateMouth()`): edge-tts no da marcas de viseme, así que es
   análisis del audio en tiempo real. `app.js` pasa a `setMouthOpen(volume, analyser)`
   el volumen RMS (`getAudioVolume()`) y el `AnalyserNode`.
@@ -249,8 +281,9 @@ lo único que se ve si WebGL o el `.glb` fallan (el `import("./avatar3d.js")` ti
 ### Despliegue
 
 Cambio de frontend (GitHub Pages, redespliega solo al hacer push a `main` desde la
-raíz). El `model.glb` pesa ~14.5MB; si se reexporta varias veces conviene valorar
-Git LFS para no inflar el historial. `frontend/avatar3d-preview.html` es una página
+raíz). El `model.glb` pesa ~14.5MB; los 4 `.fbx` de gestos (`Idle`, `idle_cambio`,
+`talking1-3`) suman ~4.5MB más. Si se reexportan varias veces conviene valorar Git
+LFS para no inflar el historial. `frontend/avatar3d-preview.html` es una página
 de prueba local (no se despliega, se puede borrar) para ver el modelo sin el
 backend.
 
@@ -268,12 +301,37 @@ requiere `profesor`/`1234` existente. `requirements-dev.txt`: pytest, httpx.
 
 ## Deuda / cosas a saber
 
-- `backend/main.py` es un archivo único de ~1650 líneas; toda la lógica del WS está ahí.
+- `backend/main.py` es un archivo único de ~1900 líneas; toda la lógica del WS está ahí.
 - `ias_funcionando.py`: script suelto para listar modelos Groq disponibles.
-- Hay funciones de DB no usadas o poco usadas (`get_or_create_user`, `list_users`,
-  `update_exercise`, `delete_exercise`).
-- `loadUserProgress` en app.js apunta a un `#progressContent` que no existe (el panel
-  real lo pinta el inline de index.html con `loadProgreso`).
 - El logging del backend es deliberadamente verboso (`logger.exception`) porque Render
   captura stdout como consola del servicio: ahí aparece la causa real de fallos de
   Groq/TTS/Supabase que el alumno solo ve como error genérico.
+
+## Auditoría de bugs (2026-09-13)
+
+Repaso completo de `frontend/` y `backend/` en busca de errores de ejecución,
+selectores DOM rotos, código muerto y fallos silenciosos en WS/Supabase/Three.js.
+Corregido y verificado (tests + smoke test real por WebSocket contra Supabase/Groq
+reales, más pruebas aisladas con mocks para los dos bugs de más impacto):
+
+- **IDOR en `GET /api/history/{session_id}`** (backend/main.py): no comprobaba
+  propiedad de la sesión — cualquier usuario autenticado podía leer los mensajes
+  de la conversación de otro alumno con solo conocer/adivinar el UUID. Ahora exige
+  ser el dueño o un profesor (la Vista Profesor reutiliza este mismo endpoint).
+- **Pérdida silenciosa de `score`** en `POST /api/exercises/{id}/progress`: al
+  marcar un reto "en curso" (sin mandar `score`) se sobrescribía a `null` en
+  Supabase cualquier puntuación ya guardada. Ahora solo se toca si el cliente lo
+  manda explícitamente.
+- **`loadUserProgress()` en app.js** apuntaba a un `#progressContent` inexistente
+  (el panel real lo pinta `loadProgreso()`, inline en index.html) y no la llamaba
+  nadie: eliminada (dead code).
+- Fallback hardcodeado `"alumno1"` en `getCurrentUser()` (usuario de pruebas de
+  antes de que existiera login real): eliminado.
+- Orden de reconexión del WebSocket (`socket.onopen` en app.js): si había un Reto
+  o práctica de Moodle activos pero sin `session_id` previo, se mandaba `config`
+  antes que `exercise_start`/`moodle_exercise_start`, lo que podía disparar un
+  tema propuesto nuevo por encima del Reto en curso al reconectar. Ahora se avisa
+  primero del Reto/Moodle activo.
+- Funciones de DB nunca llamadas desde ningún sitio (`get_or_create_user`,
+  `get_exercise`, `update_exercise`, `delete_exercise`, `list_users`) y sus
+  imports huérfanos en main.py: eliminadas.
