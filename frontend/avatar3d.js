@@ -10,22 +10,29 @@
 // `V_Wide`). Verificado contra el .glb real (script Node parseando los
 // chunks del contenedor GLB).
 //
-// DIFERENCIA CLAVE con los avatares anteriores: el .glb TRAE una animación
-// idle completa de ~8 s (`avaturn_animation`) que ya anima el cuerpo entero
-// y la cara — parpadeo, micro-miradas, cejas, respiración por la columna,
-// balanceo sutil de brazos y dedos. Se reproduce en bucle con un
-// `AnimationMixer` y el lip-sync se SUPERPONE encima: después de cada
-// `mixer.update()` se sobreescriben los influences de la boca. Por eso este
-// módulo ya NO hace parpadeo, mirada, respiración ni pose de brazos por
-// código — todo eso viene horneado. Comprobado en el .glb que la animación
-// mueve `jawOpen` como mucho a 0.04 (y ningún `viseme_*`), así que
-// sobreescribir esos shapes no pelea con nada perceptible, y que `Hips` no
-// se traslada (idle en el sitio, no se va de cámara).
+// El .glb TRAE una animación horneada de ~8 s (`avaturn_animation`) con
+// cuerpo Y cara (parpadeo, micro-miradas, cejas, respiración, balanceo de
+// brazos/dedos). Body: ya NO se usa como idle — se sustituyó por
+// `Idle.fbx` (ver bloque "Gestos de cuerpo" más abajo) para que la idle
+// pudiera formar un único sistema homogéneo con los demás gestos de
+// Mixamo (idle_cambio, talking1-3) y así cruzar entre ellos con un
+// crossfade simétrico simple, sin trucos de peso (ver el porqué en el
+// comentario de GESTURE_CROSSFADE_SECONDS). Cara: SÍ se sigue usando —
+// `Idle.fbx` es mocap de Mixamo puro, sin blendshapes, así que el
+// parpadeo/cejas/mirada del `.glb` se reproduce aparte, en un canal propio
+// (`actionFace`, ver mountAvatar3D) que nunca se apaga ni compite con
+// nada (no comparte ninguna propiedad con los clips de cuerpo, que son
+// puro hueso). El lip-sync de más abajo se SUPERPONE encima de todo esto:
+// después de cada `mixer.update()` se sobreescriben los influences de la
+// boca. Comprobado en el `.glb` que su animación mueve `jawOpen` como
+// mucho a 0.04 (y ningún `viseme_*`), así que sobreescribir esos shapes no
+// pelea con nada perceptible.
 //
 // Sin compresión meshopt/draco (solo la extensión KHR_materials_ior, que
 // three soporta de serie): GLTFLoader lo carga tal cual, sin decoder extra.
 import * as THREE from "three";
 import { GLTFLoader } from "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/loaders/GLTFLoader.js";
+import { FBXLoader } from "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/loaders/FBXLoader.js";
 
 const MODEL_URL = "./avatar/model.glb";
 
@@ -114,6 +121,61 @@ const BAND_LOW_HZ = [150, 1000];   // graves / F1
 const BAND_MID_HZ = [1000, 2600];  // F2
 const BAND_HIGH_HZ = [3000, 8000]; // fricativas / brillo
 
+// ---------- Gestos de cuerpo (Mixamo) ----------
+// Animaciones sueltas descargadas de Mixamo (mocap de cuerpo entero, no
+// tocan blendshapes de boca: el lip-sync de arriba se sigue superponiendo
+// encima sin conflicto). Idle es la pose de reposo/respirar; idle_cambio
+// rompe su rigidez de vez en cuando; talking1-3 son variaciones de gesto
+// mientras el tutor habla: la primera se elige totalmente al azar y, si el
+// turno dura más que un pase del gesto, van rotando a otra distinta de la
+// que acaba de terminar (nunca se repite la inmediatamente anterior), ver
+// pickTalkingAction/startTalkingAnimation/onGestureFinished.
+//
+// Mixamo exporta los huesos con el prefijo "mixamorigN" (N crece cada vez
+// que se reprocesa el mismo personaje subido a su auto-rigger) — CON o SIN
+// ":" según cómo lo procese el exportador/loader; en los .fbx reales de
+// este proyecto sale SIN ":" ("mixamorig7Hips", verificado parseando los 4
+// .fbx con FBXLoader de verdad en Node: el nombre de pista real es
+// "mixamorig7Hips.position", no "mixamorig7:Hips.position"). El esqueleto
+// de este .glb (Avaturn, ya compatible con Mixamo) usa esos mismos nombres
+// SIN el prefijo (Head, Hips, Spine...: verificado parseando el chunk JSON
+// del .glb), así que basta con quitárselo a cada pista de la animación
+// para que el AnimationMixer las case directamente con los huesos reales
+// del modelo — no hace falta un retargeting completo (huesos/jerarquía/
+// bind pose distintos). MIXAMO_PREFIX_RE contempla ambas variantes (con y
+// sin ":") para no volver a romperse si un futuro re-export sí lo trae.
+const GESTURE_IDLE_URL = "./avatar/Idle.fbx";
+const GESTURE_IDLE_VARIANT_URL = "./avatar/idle_cambio.fbx";
+const GESTURE_TALKING_URLS = [
+  "./avatar/talking1.fbx",
+  "./avatar/talking2.fbx",
+  "./avatar/talking3.fbx",
+];
+const GESTURE_CROSSFADE_SECONDS = 0.5;
+// Cada cuánto se dispara idle_cambio mientras el avatar está en reposo
+// (intervalo aleatorio dentro de este rango, distinto cada vez).
+const GESTURE_IDLE_VARIANT_MIN_MS = 10000;
+const GESTURE_IDLE_VARIANT_MAX_MS = 15000;
+
+// idle, idle_cambio y los 3 talking son ahora "compañeros" del mismo
+// canal de cuerpo: en todo momento hay como mucho UNO entrando (fadeIn) y
+// UNO saliendo (fadeOut), con la MISMA duración y arrancados en el mismo
+// instante (ver crossFadeBody) — así sus pesos son literalmente
+// complementarios (entra 0->1 mientras el otro va 1->0) y su suma es 1 en
+// todo momento, por construcción, sin necesitar ningún cálculo ni ningún
+// "peso mínimo" artificial.
+//
+// Esto sustituye al esquema anterior (una idle "base" siempre encendida a
+// la que las demás se sumaban por encima con un peso mínimo aparte): ahí,
+// al arrancar un gesto, el peso de la base y el del gesto entrante subían/
+// bajaban con relojes distintos y la suma podía caer por debajo de 1 un
+// instante — y three.js, cuando la suma de pesos de una propiedad no
+// llega a 1, rellena el resto mezclando hacia el valor "original" cacheado
+// de cada hueso (la bind pose / T-pose, ver PropertyMixer.apply() en el
+// código fuente de three.js). Eso era el amago de T-pose que se veía al
+// arrancar cualquier gesto. Con un crossfade simétrico entre pares eso ya
+// no puede pasar.
+
 // ---------- Estado del módulo ----------
 let renderer = null;
 let scene = null;
@@ -124,6 +186,22 @@ let rafHandle = null;
 let resizeObserver = null;
 let canvasEl = null;
 let loadedRoot = null;
+
+// Acciones de animación de cuerpo y máquina de estados de los gestos (ver
+// bloque "Gestos de cuerpo" más abajo). actionIdle/actionIdleVariant/
+// talkingActions son todas PARES entre sí: currentBodyAction es la que
+// está activa (o entrando) ahora mismo, siempre exactamente una — nunca
+// null una vez montado el avatar (ver mountAvatar3D). actionFace es un
+// canal aparte, solo blendshapes de cara (parpadeo/cejas/mirada del .glb
+// horneado), siempre a peso 1, independiente de todo lo anterior.
+let actionIdle = null;
+let actionIdleVariant = null;
+let talkingActions = [];
+let actionFace = null;
+let currentBodyAction = null;
+let currentGestureState = "idle"; // "idle" | "idle_variant" | "talking"
+let idleVariantTimer = null;
+let isTalking = false;
 
 // morph targets de boca: name -> [{ mesh, index }] (recogidos en el load)
 // y name -> valor suavizado actual (perseguido por lerp cada frame).
@@ -303,6 +381,237 @@ function updateMouth() {
   }
 }
 
+// ---------- Gestos de cuerpo (Mixamo, por frame/evento) ----------
+// El ":" es opcional a propósito: verificado con los 4 .fbx reales del
+// proyecto (FBXLoader real en Node, sin mocks) que el nombre de pista viene
+// como "mixamorig7Hips.position", SIN ":" — con el ":" obligatorio de una
+// versión anterior de esta regex, NINGUNA pista casaba con ningún hueso del
+// modelo y los gestos no movían nada (ver cabecera de la sección de arriba).
+const MIXAMO_PREFIX_RE = /^mixamorig\d*:?/;
+
+// Renombra las pistas de un AnimationClip de Mixamo in-place, quitando el
+// prefijo "mixamorigN" (con o sin ":") de cada nombre de hueso (ver
+// comentario de cabecera de esta sección). Sin esto el AnimationMixer no
+// encuentra ningún hueso del modelo con ese nombre y la animación no mueve
+// nada.
+function remapMixamoTrackNames(clip) {
+  for (const track of clip.tracks) {
+    track.name = track.name.replace(MIXAMO_PREFIX_RE, "");
+  }
+}
+
+// Quita del clip cualquier pista ".position" (verificado con los .fbx
+// reales del proyecto: cada uno trae EXACTAMENTE una, "Hips.position" — el
+// resto del rig son solo rotaciones, como es normal en mocap humanoide).
+// Es obligatorio quitarla, no basta con renombrarla: Mixamo exporta la
+// posición en centímetros SIN convertir (cadera ~97-99) mientras que este
+// .glb usa metros (cadera ~0.98, estándar glTF). Como TODOS los clips de
+// cuerpo (idle, idle_cambio, talking1-3) pasan por aquí, ninguno de ellos
+// trae ya pista de posición — así que da igual el orden en que se crucen,
+// nunca puede colarse una en centímetros mezclada con otra en metros. Solo
+// importa si alguna vez se vuelve a usar directamente un clip del .glb sin
+// pasar por esta función (ver el fallback de mountAvatar3D si Idle.fbx no
+// carga): mezclar ESE clip, con Hips.position en metros, con un gesto que
+// no la tiene ya no arrastra la cadera fuera de la cámara — simplemente
+// esa propiedad queda solo a cargo del clip del .glb mientras esté activo.
+// Los gestos de Mixamo aquí son en el sitio (hablar/idle, no locomoción),
+// así que perder su pista de traslación no quita nada real.
+function stripPositionTracks(clip) {
+  clip.tracks = clip.tracks.filter((track) => !track.name.endsWith(".position"));
+}
+
+// Carga un .fbx y devuelve su primer AnimationClip ya remapeado, o null si
+// falla (fichero que falte, red caída, .fbx sin pistas...). Una animación
+// de gesto rota o ausente nunca debe tumbar el avatar entero: en el peor
+// caso se sigue solo con la idle horneada del .glb.
+async function loadMixamoClip(fbxLoader, url) {
+  try {
+    const fbx = await fbxLoader.loadAsync(url);
+    const clip = fbx.animations && fbx.animations[0];
+    if (!clip) {
+      console.warn(`avatar3d: ${url} no trae ninguna pista de animación`);
+      return null;
+    }
+    remapMixamoTrackNames(clip);
+    stripPositionTracks(clip);
+    return clip;
+  } catch (err) {
+    console.error(`avatar3d: no se pudo cargar el gesto ${url}:`, err);
+    return null;
+  }
+}
+
+// zeroSlopeAtStart/zeroSlopeAtEnd controlan el suavizado cúbico que three
+// aplica en el primer/último keyframe cuando la acción hace bucle: con los
+// valores por defecto (true), el motor de interpolación puede "asomar"
+// hacia el fotograma de bind pose de la propia pista al calcular la
+// tangente en esos extremos. Se desactiva en todas las acciones de Mixamo
+// (idle incluida) para que la interpolación se quede pegada a los valores
+// reales de la pista, sin ese suavizado extra.
+//
+// IMPORTANTE — NO llamar aquí a action.setEffectiveWeight(0) para dejar
+// "preparado" el peso a 0 antes del primer fadeIn (una versión anterior de
+// esta función lo hacía, pensando en evitar que getEffectiveWeight()
+// devolviera un 1 transitorio antes del primer mixer.update()). Es un
+// error real: setEffectiveWeight(w) fija PARA SIEMPRE action.weight = w, y
+// _updateWeight() de three.js calcula el peso de cada frame como
+// `this.weight * interpolanteDelFade` — con action.weight clavado a 0,
+// NINGÚN fadeIn() posterior puede volver a subir el peso nunca, por mucho
+// que su interpolante llegue a 1: 0 * cualquier_cosa = 0. El gesto queda
+// mudo (weight siempre 0) desde el instante en que se crea. No hace falta
+// ningún ajuste aquí: nada en este módulo lee getEffectiveWeight() en
+// producción (crossFadeBody solo llama fadeIn/fadeOut/play), así que el
+// valor "transitorio" de fábrica (1, hasta el primer update()) es
+// completamente inofensivo.
+function configureGestureAction(action, { loopOnce = false } = {}) {
+  action.zeroSlopeAtStart = false;
+  action.zeroSlopeAtEnd = false;
+  // clampWhenFinished: si la acción llega a su fin (solo aplica a
+  // LoopOnce; en las de hablar/idle, LoopRepeat, no tiene efecto pero no
+  // molesta) se queda congelada en su última pose en vez de "soltarse" y
+  // dejar ese hueco a merced del valor cacheado de bind pose.
+  action.clampWhenFinished = true;
+  if (loopOnce) action.setLoop(THREE.LoopOnce, 1);
+  return action;
+}
+
+// Carga idle_cambio + las 3 variantes de hablar y prepara sus
+// AnimationAction. Se llama una sola vez desde mountAvatar3D, después de
+// que la idle (Idle.fbx o el fallback del .glb) ya esté lista y montada —
+// nunca bloquea el primer frame ni el arranque del lip-sync. Cada
+// animación que falle en su descarga se descarta sola (loadMixamoClip ya
+// lo resuelve a null) sin afectar a las demás.
+async function loadExtraGestureAnimations(fbxLoader) {
+  const [idleVariantClip, ...talkingClips] = await Promise.all([
+    loadMixamoClip(fbxLoader, GESTURE_IDLE_VARIANT_URL),
+    ...GESTURE_TALKING_URLS.map((url) => loadMixamoClip(fbxLoader, url)),
+  ]);
+
+  if (idleVariantClip) {
+    // Un solo pase: se dispara, se deja ver el gesto completo y se
+    // sostiene su última pose (clampWhenFinished) hasta que el evento
+    // "finished" (ver onGestureFinished) la manda de vuelta a la idle —
+    // así nunca "salta" al frame 0 de golpe.
+    actionIdleVariant = configureGestureAction(mixer.clipAction(idleVariantClip), { loopOnce: true });
+  }
+
+  // Si hay más de un gesto de hablar disponible, cada uno se reproduce UNA
+  // vez (loopOnce) y, al terminar, onGestureFinished elige otro distinto y
+  // cruza a él (rotación continua mientras el tutor siga hablando, ver
+  // startTalkingAnimation/onGestureFinished). Con uno solo cargado no hay
+  // entre qué rotar: se deja en LoopRepeat como antes, sencillamente en
+  // bucle hasta que se corte.
+  talkingActions = talkingClips
+    .filter(Boolean)
+    .map((clip) => mixer.clipAction(clip));
+  const rotateTalking = talkingActions.length > 1;
+  talkingActions.forEach((action) => configureGestureAction(action, { loopOnce: rotateTalking }));
+
+  scheduleIdleVariant();
+}
+
+// Cruza el CUERPO (huesos) de la acción de cuerpo actual a `nextAction`
+// (idle, idle_cambio o un talking — todas PARES entre sí, ver el
+// comentario de GESTURE_CROSSFADE_SECONDS): fadeOut explícito de la que
+// estuviera activa y fadeIn explícito de la nueva, arrancados en el mismo
+// instante y con la misma duración — nunca crossFadeTo, que en three.js
+// hace fadeOut+fadeIn igual pero además puede warpear el timeScale, y aquí
+// no hace falta. `restart`=true reinicia la animación desde el frame 0
+// (el caso normal: cada disparo de idle_cambio o de un talking es un
+// gesto nuevo; para volver a idle tampoco importa, es un bucle).
+function crossFadeBody(nextAction, { duration = GESTURE_CROSSFADE_SECONDS, restart = true } = {}) {
+  if (!nextAction || nextAction === currentBodyAction) return;
+  const previous = currentBodyAction;
+  if (restart) nextAction.reset();
+  nextAction.enabled = true;
+  nextAction.fadeIn(duration);
+  nextAction.play();
+  if (previous) previous.fadeOut(duration);
+  currentBodyAction = nextAction;
+}
+
+// Programa el próximo "romper la rigidez" (idle_cambio) a un intervalo
+// aleatorio de 10-15 s. Se reprograma cada vez que se vuelve al estado
+// "idle" (al terminar de hablar, o al terminar el propio idle_cambio).
+function scheduleIdleVariant() {
+  clearTimeout(idleVariantTimer);
+  idleVariantTimer = null;
+  if (!actionIdleVariant) return; // idle_cambio.fbx no se pudo cargar
+  const delay = GESTURE_IDLE_VARIANT_MIN_MS +
+    Math.random() * (GESTURE_IDLE_VARIANT_MAX_MS - GESTURE_IDLE_VARIANT_MIN_MS);
+  idleVariantTimer = setTimeout(() => {
+    // Pudo empezar a hablar (o volver a dispararse otro idle_cambio) entre
+    // que se programó este timeout y que se cumplió: solo se dispara si
+    // seguimos realmente en reposo.
+    if (currentGestureState !== "idle") return;
+    currentGestureState = "idle_variant";
+    crossFadeBody(actionIdleVariant);
+  }, delay);
+}
+
+// mixer "finished" dispara en dos casos (las acciones LoopRepeat, como la
+// idle o un talking cuando solo se cargó uno, nunca lo disparan):
+//   - idle_cambio termina su único pase -> vuelve a idle y reprograma el
+//     siguiente idle_cambio.
+//   - un gesto de hablar (loopOnce, cuando hay >1 cargados) termina su
+//     único pase mientras se sigue hablando -> se cruza a otro gesto de
+//     hablar distinto, sin repetir el que acaba de terminar (rotación
+//     continua, ver pickTalkingAction). Si para entonces ya se dejó de
+//     hablar (currentGestureState ya no es "talking", ver
+//     stopTalkingAnimation) el evento llega tarde y no hace nada.
+function onGestureFinished(event) {
+  if (event.action === actionIdleVariant && currentGestureState === "idle_variant") {
+    currentGestureState = "idle";
+    crossFadeBody(actionIdle);
+    scheduleIdleVariant();
+    return;
+  }
+  if (currentGestureState === "talking" && talkingActions.includes(event.action)) {
+    const next = pickTalkingAction(event.action);
+    if (next) crossFadeBody(next);
+  }
+}
+
+// Elige un gesto de hablar al azar, excluyendo opcionalmente `exclude` (si
+// hay más de uno cargado) para no repetir esa animación inmediatamente:
+//   - Selección inicial (startTalkingAnimation, sin `exclude`): totalmente
+//     aleatoria entre los disponibles, sin memoria de turnos anteriores.
+//   - Rotación mientras se sigue hablando (onGestureFinished, con
+//     `exclude` = el gesto que acaba de terminar): aleatoria entre el
+//     resto, para no repetir inmediatamente el que acaba de terminar.
+function pickTalkingAction(exclude = null) {
+  if (!talkingActions.length) return null;
+  const choices = exclude && talkingActions.length > 1
+    ? talkingActions.filter((a) => a !== exclude)
+    : talkingActions;
+  return choices[Math.floor(Math.random() * choices.length)];
+}
+
+// Se llama desde setMouthOpen() en cuanto arranca el audio de un segmento
+// nuevo (ver el flag isTalking más abajo). Interrumpe idle_cambio si
+// estuviera a mitad y elige un gesto de hablar inicial completamente al
+// azar (ver pickTalkingAction). A partir de ahí, mientras se siga hablando,
+// onGestureFinished se encarga de rotar a un gesto distinto cada vez que el
+// actual termina (crossfade de GESTURE_CROSSFADE_SECONDS, igual que aquí).
+function startTalkingAnimation() {
+  clearTimeout(idleVariantTimer);
+  idleVariantTimer = null;
+  const next = pickTalkingAction();
+  if (!next) return; // sin gestos de hablar cargados
+  currentGestureState = "talking";
+  crossFadeBody(next);
+}
+
+// Se llama en cuanto la cola de audio se vacía del todo (setMouthOpen(0)
+// sin analizador, ver más abajo): vuelve a la idle y reprograma el
+// próximo idle_cambio.
+function stopTalkingAnimation() {
+  if (currentGestureState !== "talking") return;
+  currentGestureState = "idle";
+  crossFadeBody(actionIdle);
+  scheduleIdleVariant();
+}
+
 function renderLoop() {
   rafHandle = requestAnimationFrame(renderLoop);
   // dt acotado: al volver de una pestaña oculta el primer delta es enorme.
@@ -349,19 +658,76 @@ export async function mountAvatar3D(canvas) {
   fill.position.set(-1.1, 0.6, 1.0);
   scene.add(fill);
 
+  // El .glb (14 MB) e Idle.fbx (~1.6 MB) se piden EN PARALELO: Idle.fbx es
+  // ahora la idle real del cuerpo (ver cabecera del archivo) y debe estar
+  // lista antes del primer frame para no dejar al avatar en pose de bind
+  // mientras se descarga — pedirla en paralelo con el .glb, que de largo
+  // tarda más, no añade apenas latencia sobre lo que ya había.
   const loader = new GLTFLoader();
-  const gltf = await loader.loadAsync(MODEL_URL);
+  const fbxLoader = new FBXLoader();
+  const [gltf, idleClip] = await Promise.all([
+    loader.loadAsync(MODEL_URL),
+    loadMixamoClip(fbxLoader, GESTURE_IDLE_URL),
+  ]);
   const root = gltf.scene;
   scene.add(root);
   loadedRoot = root;
 
-  // Animación idle horneada: en bucle. Si el .glb no trajera ninguna, el
-  // avatar se queda quieto en pose de bind (fallback aceptable).
-  if (gltf.animations && gltf.animations.length) {
+  // El culling por frustum de three.js calcula la esfera acotante de cada
+  // SkinnedMesh a partir de la geometría SIN animar (pose de bind): si un
+  // gesto lo posa fuera de esa esfera original (brazos muy levantados, la
+  // cámara muy cerca...) three.js puede darlo por "fuera de cámara" y dejar
+  // de dibujarlo aunque sí se vea. Desactivarlo cuesta poco (son 6 mallas)
+  // y evita ese falso negativo — es la recomendación habitual de three.js
+  // para personajes con esqueleto animado.
+  root.traverse((child) => {
+    if (child.isMesh) child.frustumCulled = false;
+  });
+
+  const hasBakedAnimation = !!(gltf.animations && gltf.animations.length);
+
+  if (idleClip || hasBakedAnimation) {
     mixer = new THREE.AnimationMixer(root);
-    const action = mixer.clipAction(gltf.animations[0]);
-    action.play();
+
+    if (idleClip) {
+      actionIdle = configureGestureAction(mixer.clipAction(idleClip));
+    } else {
+      // Idle.fbx no se pudo cargar (red, archivo movido...): fallback al
+      // comportamiento anterior, la idle horneada COMPLETA del .glb
+      // (cuerpo + cara), para no dejar al avatar en pose de bind.
+      actionIdle = mixer.clipAction(gltf.animations[0]);
+    }
+    actionIdle.play();
+    currentBodyAction = actionIdle;
+
+    // Vida de cara (parpadeo, cejas, micro-mirada): solo si SÍ se usó
+    // Idle.fbx para el cuerpo — si no (fallback de arriba), actionIdle YA
+    // es el clip completo del .glb con la cara incluida y no hace falta
+    // un canal aparte. Se clona el clip horneado y se descarta todo lo
+    // que no sea morphTargetInfluences: así este canal nunca toca ningún
+    // hueso (cero conflicto con idle/idle_cambio/talking) y se reproduce
+    // siempre a peso 1, para siempre, sin fadeIn/fadeOut ni relación con
+    // la máquina de estados de los gestos de cuerpo.
+    if (idleClip && hasBakedAnimation) {
+      const faceClip = gltf.animations[0].clone();
+      faceClip.tracks = faceClip.tracks.filter((t) => t.name.endsWith(".morphTargetInfluences"));
+      if (faceClip.tracks.length) {
+        actionFace = mixer.clipAction(faceClip);
+        actionFace.play();
+      }
+    }
+
     mixer.update(0); // aplica el frame 0 antes de encuadrar
+    mixer.addEventListener("finished", onGestureFinished);
+    // SIN await: idle_cambio + los 3 talking pesan ~3.6MB en total y no
+    // deben retrasar ni el primer frame renderizado ni el arranque del
+    // lip-sync, que no dependen de ellos. Se activan solos
+    // (scheduleIdleVariant) en cuanto terminan de llegar; si tardan o
+    // fallan, el avatar mientras tanto (o para siempre, si fallan) se ve
+    // exactamente igual: solo con la idle en bucle.
+    loadExtraGestureAnimations(fbxLoader).catch((err) => {
+      console.error("avatar3d: fallo cargando las animaciones de gesto:", err);
+    });
   }
 
   mouthGroups = {};
@@ -380,6 +746,11 @@ export async function mountAvatar3D(canvas) {
   document.addEventListener("visibilitychange", handleVisibilityChange);
 
   renderLoop();
+  // Nota: idle_cambio y los talking (loadExtraGestureAnimations) se cargan
+  // en segundo plano SIN esperar aquí (ver más arriba), así que en este
+  // punto todavía pueden no estar listos — no se incluyen en este objeto
+  // de diagnóstico para no reportar falsos negativos por una carrera de
+  // red.
   return {
     mouthTargetsFound: Object.fromEntries(
       MOUTH_SHAPES.map((n) => [n, mouthGroups[n].length])
@@ -402,8 +773,21 @@ export function setMouthOpen(level, analyserNode = null) {
       freqBuf = new Uint8Array(analyser.frequencyBinCount);
       analyserNyquist = (analyser.context && analyser.context.sampleRate ? analyser.context.sampleRate : 48000) / 2;
     }
+    // app.js pasa un analizador mientras haya CUALQUIER audio de la cola
+    // sonando (incluso al encadenar varios segmentos de una misma
+    // respuesta): es la señal de "está hablando" para el gesto de cuerpo.
+    if (!isTalking) {
+      isTalking = true;
+      startTalkingAnimation();
+    }
   } else {
     analyser = null;
+    // app.js solo llama a setMouthOpen(0) SIN analizador cuando la cola de
+    // audio se ha vaciado del todo (forceIdle=true): fin real del turno.
+    if (isTalking) {
+      isTalking = false;
+      stopTalkingAnimation();
+    }
   }
 }
 
@@ -413,8 +797,20 @@ export function unmountAvatar3D() {
   if (resizeObserver) resizeObserver.disconnect();
   resizeObserver = null;
   document.removeEventListener("visibilitychange", handleVisibilityChange);
-  if (mixer) mixer.stopAllAction();
+  clearTimeout(idleVariantTimer);
+  idleVariantTimer = null;
+  if (mixer) {
+    mixer.removeEventListener("finished", onGestureFinished);
+    mixer.stopAllAction();
+  }
   mixer = null;
+  actionIdle = null;
+  actionIdleVariant = null;
+  talkingActions = [];
+  actionFace = null;
+  currentBodyAction = null;
+  currentGestureState = "idle";
+  isTalking = false;
   if (renderer) renderer.dispose();
   renderer = null;
   scene = null;
