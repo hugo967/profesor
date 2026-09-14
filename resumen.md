@@ -10,8 +10,13 @@ El alumno chatea (texto o voz) con un "profesor" que responde por escrito y con
 voz (TTS), corrige errores de forma natural y propone temas. Hay un panel de
 profesor para gestionar alumnos, ver actividad y asignar retos/tareas.
 
-## Estado actual (2026-09-13)
+## Estado actual (2026-09-14)
 
+- **Sincronía de gestos con el habla + input bloqueado mientras el tutor
+  habla**: terminado, probado (tests unitarios reales de la lógica pura +
+  revisión manual de la integración) y pusheado a `hugo967/profesor` — ver
+  sección "Avatar 3D" (subsección "Sincronía con el habla") y el bullet
+  correspondiente en "Frontend `app.js`" más abajo.
 - **Avatar 3D con gestos Mixamo**: terminado, probado en el navegador y
   **pusheado** a `hugo967/profesor` (commit `154a6f7`) — ver sección "Avatar 3D"
   más abajo para el detalle de la máquina de estados y la rotación de gestos.
@@ -240,9 +245,18 @@ dar 503 y empieza a listar lo que haya en el curso.
   continua, reanuda solo si el motor corta por silencio). Si `/api/transcribe` falla
   una vez → pasa a Web Speech el resto de la sesión.
 - **Avatar**: `playAudio()` conecta el `<audio>` de TTS a un `AnalyserNode`;
-  `monitorVolume()` (rAF) llama a `Avatar3D.setMouthOpen(volume, analyser)` en cada
-  frame para el lip-sync. `avatar3d.js` se carga siempre (sin flag), con `.catch()`
-  como red de seguridad. Ver sección "Avatar 3D" más abajo para el detalle completo.
+  `monitorVolume()` (rAF) llama a `Avatar3D.setMouthOpen(volume, analyser, currentTime)`
+  en cada frame para el lip-sync y los beats de puntuación del cuerpo. `avatar3d.js`
+  se carga siempre (sin flag), con `.catch()` como red de seguridad. Ver sección
+  "Avatar 3D" más abajo para el detalle completo.
+- **Input bloqueado mientras el tutor tiene el turno** (2026-09-14, `lockTurn()`/
+  `unlockTurn()`): desde que se manda un mensaje/se arranca un Reto o práctica de
+  Moodle/empieza un tema proactivo, hasta que el tutor termina de hablar DEL TODO
+  (incluidos los huecos entre segmentos de una misma respuesta) — el desbloqueo real
+  pasa por un único punto, `stopVolumeMonitor({forceIdle:true})`, ya la señal
+  existente de "no queda audio pendiente". Con salvaguardas de desbloqueo ante
+  error del WS, desconexión o timeout del tema proactivo, para que nunca se quede
+  bloqueado para siempre.
 - **Modal de ajustes**: pestañas Progreso / Historial / Ejercicios / Retos-Tareas /
   Vista Profesor (esta última solo teachers; Retos solo alumnos). Enrutado por hash,
   con `popstate`. Lógica repartida entre el `<script>` inline de `index.html`
@@ -332,6 +346,31 @@ lo único que se ve si WebGL o el `.glb` fallan (el `import("./avatar3d.js")` ti
   (hueso `Spine`); **ancla el borde superior** y el sobrante por aspect ratio va
   hacia abajo (más torso), nunca a más aire sobre la cabeza. Se recalcula en cada
   `resize()`. Constantes `FRAME_*`.
+
+### Sincronía de gestos con el habla (2026-09-14)
+
+Antes, el gesto de hablar activo corría "a piñón fijo": rotaba solo cuando su
+propio clip terminaba, sin mirar el audio ni el texto. `updateBodySpeechSync()`
+en `avatar3d.js` añade dos señales, combinadas con la lógica pura de
+`frontend/avatar-speech-sync.js` (testeada con Node normal, sin three.js/DOM —
+`node frontend/avatar-speech-sync.test.mjs`, 21 tests):
+
+- **Pausa real por volumen** (`createPauseTracker`): histéresis sobre el mismo
+  RMS que ya usa el lip-sync — un silencio sostenido suelta el gesto a la idle;
+  al volver la voz, cruza a otro gesto de hablar.
+- **Beats de puntuación del texto** (`computeTextBeats`): reparte comas/puntos/
+  interrogaciones del texto de cada segmento en proporción sobre la duración
+  real del audio (edge-tts no da marcas por palabra); en cada punto/pregunta
+  fuerza un cambio de gesto, la coma solo adelanta la detección de la pausa.
+
+Calibración (2026-09-14, a petición del cliente: el primer ajuste se sentía
+"nervioso"/artificial): crossfades largos (~0.7-0.9s), pausa real exigida
+~1.1s (no reacciona a huecos cortos entre palabras) y mínimo 3.5s entre
+cambios de gesto. Todas las constantes están en el bloque
+`// ---------- Sincronía de cuerpo con el habla ----------` de `avatar3d.js`.
+`frontend/avatar3d-preview.html` tiene un modo de prueba con texto+audio real
+y un panel "Gestos" que loguea cada transición (marca en rojo dos cambios a
+menos de 250ms, indicio de tirón) para verificar a ojo sin tocar el backend.
 
 ### Despliegue
 

@@ -33,6 +33,7 @@
 import * as THREE from "three";
 import { GLTFLoader } from "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/loaders/GLTFLoader.js";
 import { FBXLoader } from "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/loaders/FBXLoader.js";
+import { computeTextBeats, createPauseTracker } from "./avatar-speech-sync.js";
 
 const MODEL_URL = "./avatar/model.glb";
 
@@ -129,7 +130,13 @@ const BAND_HIGH_HZ = [3000, 8000]; // fricativas / brillo
 // mientras el tutor habla: la primera se elige totalmente al azar y, si el
 // turno dura más que un pase del gesto, van rotando a otra distinta de la
 // que acaba de terminar (nunca se repite la inmediatamente anterior), ver
-// pickTalkingAction/startTalkingAnimation/onGestureFinished.
+// pickTalkingAction/startTalkingAnimation/onGestureFinished. Sobre esto se
+// monta además una sincronía con el RITMO real del habla (bloque de
+// constantes "Sincronía de cuerpo con el habla" y updateBodySpeechSync más
+// abajo): una pausa real en el audio suelta el gesto a la idle, y cada
+// coma/punto/interrogación del texto puede forzar un cambio -- sin esto el
+// gesto activo corría "a piñón fijo" hasta que su propio clip terminaba,
+// sin mirar para nada si el tutor seguía hablando de verdad.
 //
 // Mixamo exporta los huesos con el prefijo "mixamorigN" (N crece cada vez
 // que se reprocesa el mismo personaje subido a su auto-rigger) — CON o SIN
@@ -151,11 +158,43 @@ const GESTURE_TALKING_URLS = [
   "./avatar/talking2.fbx",
   "./avatar/talking3.fbx",
 ];
-const GESTURE_CROSSFADE_SECONDS = 0.5;
+const GESTURE_CROSSFADE_SECONDS = 0.9; // crossfade largo y gradual: el cambio de postura debe leerse como fluido, no como un corte
 // Cada cuánto se dispara idle_cambio mientras el avatar está en reposo
 // (intervalo aleatorio dentro de este rango, distinto cada vez).
 const GESTURE_IDLE_VARIANT_MIN_MS = 10000;
 const GESTURE_IDLE_VARIANT_MAX_MS = 15000;
+
+// ---------- Sincronía de cuerpo con el habla ----------
+// Antes, mientras el turno durase, el gesto de hablar corría "a piñón
+// fijo": rotaba solo cuando un clip terminaba su propio pase, sin mirar
+// para nada el audio ni el texto (el mismo gesto seguía sobre un silencio
+// real, y no había ninguna reacción a comas/puntos/preguntas). Esto añade
+// dos señales, combinadas en updateBodySpeechSync() más abajo:
+//   1. Pausa real por volumen (createPauseTracker, en avatar-speech-sync.js):
+//      un silencio sostenido en el audio real suelta el gesto y cruza a la
+//      idle; al volver la voz, cruza de vuelta a un gesto de hablar.
+//   2. Beats de puntuación del texto (computeTextBeats, mismo módulo): en
+//      cada coma/punto/interrogación se fuerza un cambio de gesto (si se
+//      sigue hablando) o se adelanta la detección de la pausa real (si es
+//      una coma, donde forzar el cambio sería demasiado frecuente).
+// Ambas son deliberadamente aproximadas -- no hay marcas de palabra del
+// TTS -- así que están pensadas para dar variación con sentido, no
+// precisión de vídeo doblado. Segunda pasada de calibración (el primer
+// juego de valores reaccionaba demasiado y se sentía nervioso/artificial):
+// ahora todo pesa hacia MENOS movimiento y MÁS gradual -- el avatar debe
+// quedarse en una postura el tiempo suficiente para que se lea como
+// natural, y solo soltarla en un silencio de verdad largo (una pausa real
+// de fin de frase/turno), no en cualquier micro-hueco entre palabras.
+// Conviene seguir afinando mirando el avatar real con TTS real
+// (frontend/avatar3d-preview.html tiene un modo de prueba con texto+audio
+// para esto, ver más abajo).
+const PAUSE_ENTER_SECONDS = 1.1;         // silencio sostenido para soltar el gesto y pasar a idle -- solo pausas largas de verdad
+const PAUSE_ENTER_SOFT_SECONDS = 0.55;   // igual, pero justo tras un beat de puntuación (ahí SÍ se espera pausa) -- sigue siendo largo, no cualquier coma
+const PAUSE_EXIT_SECONDS = 0.15;         // voz sostenida para confirmar que se ha vuelto a hablar (evita parpadeos)
+const PAUSE_CROSSFADE_SECONDS = 0.7;     // crossfade de la pausa, también largo y suave (algo más corto que el normal: sigue siendo un hueco puntual)
+const BEAT_SOFT_WINDOW_SECONDS = 0.7;    // cuánto dura el umbral corto tras cruzar un beat de puntuación (más que PAUSE_ENTER_SOFT_SECONDS, para que le dé tiempo a cumplirse)
+const QUESTION_CROSSFADE_SECONDS = 0.75; // interrogación: crossfade un pelín más vivo que el normal, pero igual de suave (único proxy de "énfasis" sin gestos dedicados)
+const GESTURE_MIN_SWITCH_MS = 3500;      // no cambiar de gesto de hablar más seguido que esto -- deja que cada postura se vea de verdad antes de la siguiente
 
 // idle, idle_cambio y los 3 talking son ahora "compañeros" del mismo
 // canal de cuerpo: en todo momento hay como mucho UNO entrando (fadeIn) y
@@ -199,9 +238,25 @@ let actionIdleVariant = null;
 let talkingActions = [];
 let actionFace = null;
 let currentBodyAction = null;
-let currentGestureState = "idle"; // "idle" | "idle_variant" | "talking"
+let currentGestureState = "idle"; // "idle" | "idle_variant" | "talking" | "talking_pause"
 let idleVariantTimer = null;
 let isTalking = false;
+
+// Sincronía de cuerpo con el habla (ver bloque de constantes de arriba).
+// runningSeconds: reloj propio del módulo (suma de los dt del render loop),
+// para el rate-limit de cambios de gesto (GESTURE_MIN_SWITCH_MS) — no se
+// reinicia nunca, como clockSeconds en createPauseTracker.
+let runningSeconds = 0;
+let lastGestureSwitchAt = -Infinity;
+let pausedFromAction = null; // gesto de hablar del que se venía al entrar en pausa (para no repetirlo al volver)
+let pauseTracker = createPauseTracker({
+  enterSeconds: PAUSE_ENTER_SECONDS,
+  exitSeconds: PAUSE_EXIT_SECONDS,
+  softEnterSeconds: PAUSE_ENTER_SOFT_SECONDS,
+});
+let pendingSpeechText = ""; // texto del segmento en curso, a la espera de conocer su duración real
+let speechBeats = [];       // beats de puntuación del segmento en curso (ver computeTextBeats)
+let speechBeatIndex = 0;    // siguiente beat pendiente de disparar
 
 // morph targets de boca: name -> [{ mesh, index }] (recogidos en el load)
 // y name -> valor suavizado actual (perseguido por lerp cada frame).
@@ -210,6 +265,7 @@ let mouthCurrent = {};
 
 // señal de audio
 let externalMouthLevel = 0; // RMS 0..1 (getAudioVolume() en app.js)
+let externalCurrentTime = null; // currentTime (s) del <audio> en curso, para los beats de puntuación
 let analyser = null;
 let freqBuf = null;
 let analyserNyquist = 24000;
@@ -328,6 +384,10 @@ function bandEnergy(loHz, hiHz) {
 }
 
 // ---------- Boca (por frame) ----------
+// Devuelve `speaking` (el mismo booleano que ya calculaba internamente para
+// el AGC) para que renderLoop() se lo pase también a updateBodySpeechSync():
+// una sola fuente de verdad sobre "hay voz real ahora mismo", compartida
+// entre la boca y el cuerpo, en vez de calcularlo dos veces por separado.
 function updateMouth() {
   // APERTURA: siempre desde el RMS (señal lineal, buen rango dinámico).
   const level = externalMouthLevel;
@@ -379,6 +439,8 @@ function updateMouth() {
     mouthCurrent[name] = THREE.MathUtils.lerp(mouthCurrent[name], targets[name] || 0, MOUTH_SMOOTH);
     applyGroup(mouthGroups[name], mouthCurrent[name]);
   }
+
+  return speaking;
 }
 
 // ---------- Gestos de cuerpo (Mixamo, por frame/evento) ----------
@@ -567,8 +629,7 @@ function onGestureFinished(event) {
     return;
   }
   if (currentGestureState === "talking" && talkingActions.includes(event.action)) {
-    const next = pickTalkingAction(event.action);
-    if (next) crossFadeBody(next);
+    rotateTalkingGesture(event.action);
   }
 }
 
@@ -587,37 +648,142 @@ function pickTalkingAction(exclude = null) {
   return choices[Math.floor(Math.random() * choices.length)];
 }
 
+// Cruza a un gesto de hablar distinto de `exclude` (normalmente el que
+// acaba de estar activo) y registra el instante para el rate-limit de
+// GESTURE_MIN_SWITCH_MS (ver switchTalkingGesture). Único punto que de
+// verdad mete un talking* en el canal de cuerpo -- onGestureFinished,
+// switchTalkingGesture y resumeTalkingGesture pasan todos por aquí para que
+// el rate-limit cuente también los cambios "naturales" (clip que termina su
+// pase), no solo los disparados por un beat de puntuación.
+function rotateTalkingGesture(exclude, duration = GESTURE_CROSSFADE_SECONDS) {
+  const next = pickTalkingAction(exclude);
+  if (!next) return;
+  lastGestureSwitchAt = runningSeconds;
+  crossFadeBody(next, { duration });
+}
+
 // Se llama desde setMouthOpen() en cuanto arranca el audio de un segmento
 // nuevo (ver el flag isTalking más abajo). Interrumpe idle_cambio si
 // estuviera a mitad y elige un gesto de hablar inicial completamente al
 // azar (ver pickTalkingAction). A partir de ahí, mientras se siga hablando,
 // onGestureFinished se encarga de rotar a un gesto distinto cada vez que el
-// actual termina (crossfade de GESTURE_CROSSFADE_SECONDS, igual que aquí).
+// actual termina (crossfade de GESTURE_CROSSFADE_SECONDS, igual que aquí), y
+// updateBodySpeechSync() reacciona además a pausas reales y a beats de
+// puntuación del texto (ver bloque de constantes "Sincronía de cuerpo con
+// el habla"). pauseTracker se reinicia aquí: un turno nuevo nunca debe
+// arrancar ya "pausado" por resto de un turno anterior.
 function startTalkingAnimation() {
   clearTimeout(idleVariantTimer);
   idleVariantTimer = null;
   const next = pickTalkingAction();
   if (!next) return; // sin gestos de hablar cargados
   currentGestureState = "talking";
+  lastGestureSwitchAt = runningSeconds;
+  pausedFromAction = null;
+  pauseTracker.reset();
   crossFadeBody(next);
 }
 
 // Se llama en cuanto la cola de audio se vacía del todo (setMouthOpen(0)
 // sin analizador, ver más abajo): vuelve a la idle y reprograma el
-// próximo idle_cambio.
+// próximo idle_cambio. Puede llegar tanto desde "talking" (fin de turno
+// mientras se hablaba con normalidad) como desde "talking_pause" (el turno
+// terminó justo durante una pausa real a media frase) -- en ambos casos el
+// destino es el mismo, la idle.
 function stopTalkingAnimation() {
-  if (currentGestureState !== "talking") return;
+  if (currentGestureState !== "talking" && currentGestureState !== "talking_pause") return;
   currentGestureState = "idle";
+  pausedFromAction = null;
+  pauseTracker.reset();
+  speechBeats = [];
+  speechBeatIndex = 0;
   crossFadeBody(actionIdle);
   scheduleIdleVariant();
+}
+
+// Cruza de vuelta a un gesto de hablar tras una pausa real (ver
+// updateBodySpeechSync): excluye el que estaba activo justo antes de
+// pausar (pausedFromAction) para que no sea siempre el mismo el que se vea
+// al reanudar. Sin rate-limit: volver de una pausa real debe gesticular sí
+// o sí, aunque haya habido un beat de puntuación hace poco.
+function resumeTalkingGesture(duration) {
+  rotateTalkingGesture(pausedFromAction, duration);
+  pausedFromAction = null;
+}
+
+// Fuerza un cambio de gesto de hablar (disparado por un beat de puntuación
+// mientras se sigue hablando con normalidad) respetando GESTURE_MIN_SWITCH_MS:
+// si el cuerpo acaba de cambiar de gesto hace muy poco (otro beat, o un
+// clip que terminó su pase justo entonces) este disparo simplemente no hace
+// nada, para no encadenar dos crossfades pegados y que se vea "tembloroso".
+function switchTalkingGesture(duration) {
+  if (runningSeconds - lastGestureSwitchAt < GESTURE_MIN_SWITCH_MS / 1000) return;
+  rotateTalkingGesture(currentBodyAction, duration);
+}
+
+// Se llama al cruzar cada beat de puntuación del segmento en curso (ver
+// updateBodySpeechSync). Coma: no fuerza cambio de gesto -- sería demasiado
+// frecuente y se vería nervioso -- solo adelanta la detección de la pausa
+// real que suele venir justo después (requestSoftWindow). Punto/exclamación/
+// interrogación: si se sigue hablando con normalidad, fuerza un cambio de
+// gesto visible ahí mismo -- esto es lo que rompe la sensación de "piñón
+// fijo" cuando un turno entero cabe en un único pase de talking*.fbx y antes
+// no cambiaba de postura hasta que ese pase terminaba por su cuenta. Las
+// preguntas usan un crossfade algo más vivo (QUESTION_CROSSFADE_SECONDS)
+// como único proxy de "énfasis" disponible sin gestos dedicados de pregunta.
+function onSpeechBeat(type) {
+  pauseTracker.requestSoftWindow(BEAT_SOFT_WINDOW_SECONDS);
+  if (type === "comma") return;
+  if (currentGestureState === "talking") {
+    switchTalkingGesture(type === "question" ? QUESTION_CROSSFADE_SECONDS : GESTURE_CROSSFADE_SECONDS);
+  }
+}
+
+// ---------- Sincronía de cuerpo con el habla (por frame) ----------
+// `speaking` es el mismo booleano que updateMouth() ya calculaba para el
+// AGC del lip-sync (ver renderLoop): una sola fuente de verdad sobre si hay
+// voz real ESTE frame, compartida entre boca y cuerpo.
+function updateBodySpeechSync(speaking, dt) {
+  if (!isTalking) return; // sin turno en curso, nada que sincronizar
+
+  // 1) Beats de puntuación pendientes del segmento en curso (ver
+  // beginSpeechSegment/setSpeechSegmentDuration): se disparan en cuanto el
+  // audio real alcanza su instante calculado, en orden, sin poder saltarse
+  // ninguno aunque un frame lento haga que currentTime avance de golpe por
+  // encima de varios a la vez.
+  if (Number.isFinite(externalCurrentTime)) {
+    while (
+      speechBeatIndex < speechBeats.length &&
+      externalCurrentTime >= speechBeats[speechBeatIndex].time
+    ) {
+      onSpeechBeat(speechBeats[speechBeatIndex].type);
+      speechBeatIndex++;
+    }
+  }
+
+  // 2) Pausa real por volumen, con histéresis (ver createPauseTracker).
+  const { paused, changed } = pauseTracker.update(dt, speaking);
+  if (!changed) return;
+  if (paused) {
+    if (currentGestureState === "talking") {
+      pausedFromAction = currentBodyAction;
+      currentGestureState = "talking_pause";
+      crossFadeBody(actionIdle, { duration: PAUSE_CROSSFADE_SECONDS });
+    }
+  } else if (currentGestureState === "talking_pause") {
+    currentGestureState = "talking";
+    resumeTalkingGesture(PAUSE_CROSSFADE_SECONDS);
+  }
 }
 
 function renderLoop() {
   rafHandle = requestAnimationFrame(renderLoop);
   // dt acotado: al volver de una pestaña oculta el primer delta es enorme.
   const dt = Math.min(clock.getDelta(), 0.1);
+  runningSeconds += dt;
   if (mixer) mixer.update(dt);
-  updateMouth();
+  const speaking = updateMouth();
+  updateBodySpeechSync(speaking, dt);
   renderer.render(scene, camera);
 }
 
@@ -765,8 +931,13 @@ export async function mountAvatar3D(canvas) {
 //  - analyserNode: el AnalyserNode del <audio> de TTS. Con él, el lip-sync
 //    hace su propio análisis por bandas (ver updateMouth). Pasar null (o
 //    nada) al parar el audio para que la boca cierre.
-export function setMouthOpen(level, analyserNode = null) {
+//  - currentTimeSeconds: currentTime (s) del <audio> que está sonando ahora
+//    mismo, para disparar los beats de puntuación de ESE segmento en el
+//    instante correcto (ver updateBodySpeechSync/beginSpeechSegment). Se
+//    ignora si no es un número finito.
+export function setMouthOpen(level, analyserNode = null, currentTimeSeconds = null) {
   externalMouthLevel = Math.max(0, level || 0);
+  externalCurrentTime = Number.isFinite(currentTimeSeconds) ? currentTimeSeconds : null;
   if (analyserNode) {
     if (analyserNode !== analyser) {
       analyser = analyserNode;
@@ -782,6 +953,7 @@ export function setMouthOpen(level, analyserNode = null) {
     }
   } else {
     analyser = null;
+    externalCurrentTime = null;
     // app.js solo llama a setMouthOpen(0) SIN analizador cuando la cola de
     // audio se ha vaciado del todo (forceIdle=true): fin real del turno.
     if (isTalking) {
@@ -789,6 +961,43 @@ export function setMouthOpen(level, analyserNode = null) {
       stopTalkingAnimation();
     }
   }
+}
+
+// Se llama desde app.js justo antes de reproducir un segmento de audio
+// nuevo (ver playNextInQueue), con el TEXTO de ese segmento -- se conoce de
+// entrada, por WebSocket, antes de que el audio siquiera empiece a sonar.
+// Solo guarda el texto y limpia los beats del segmento anterior: los beats
+// de verdad no se calculan hasta setSpeechSegmentDuration(), porque
+// dependen de la duración REAL del audio, que el navegador tarda un
+// instante en conocer (evento "loadedmetadata").
+export function beginSpeechSegment(text) {
+  pendingSpeechText = typeof text === "string" ? text : "";
+  speechBeats = [];
+  speechBeatIndex = 0;
+}
+
+// Se llama en cuanto app.js conoce la duración real del audio del segmento
+// en curso (audio.duration, tras "loadedmetadata"). Si nunca llega a
+// llamarse (audio raro, navegador que no dispara el evento a tiempo) el
+// segmento sencillamente no tiene beats de puntuación -- el lip-sync y la
+// pausa por volumen real (la señal principal) siguen funcionando igual; los
+// beats de texto son solo un afinado adicional, nunca la única señal.
+export function setSpeechSegmentDuration(durationSeconds) {
+  speechBeats = computeTextBeats(pendingSpeechText, durationSeconds);
+  speechBeatIndex = 0;
+}
+
+// Solo para pruebas/depuración (frontend/avatar3d-preview.html la usa para
+// pintar un log de gestos): instantánea de solo-lectura del estado de la
+// sincronía de cuerpo con el habla. app.js en producción no la llama.
+export function getSpeechSyncDebugState() {
+  return {
+    gestureState: currentGestureState,
+    isTalking,
+    paused: pauseTracker.paused,
+    beatsTotal: speechBeats.length,
+    beatsFired: speechBeatIndex,
+  };
 }
 
 export function unmountAvatar3D() {
@@ -811,6 +1020,13 @@ export function unmountAvatar3D() {
   currentBodyAction = null;
   currentGestureState = "idle";
   isTalking = false;
+  runningSeconds = 0;
+  lastGestureSwitchAt = -Infinity;
+  pausedFromAction = null;
+  pauseTracker.reset();
+  pendingSpeechText = "";
+  speechBeats = [];
+  speechBeatIndex = 0;
   if (renderer) renderer.dispose();
   renderer = null;
   scene = null;
@@ -819,6 +1035,7 @@ export function unmountAvatar3D() {
   mouthGroups = {};
   mouthCurrent = {};
   externalMouthLevel = 0;
+  externalCurrentTime = null;
   analyser = null;
   freqBuf = null;
   levelEnv = 0;

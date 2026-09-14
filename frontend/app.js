@@ -331,9 +331,13 @@ function connectAnalyser(audio) {
 function monitorVolume() {
   const volume = getAudioVolume();
   // Al avatar 3D se le pasan el volumen RMS y el AnalyserNode: hace su
-  // propio análisis para el lip-sync (ver avatar3d.js). Si aún no ha
-  // cargado, este frame simplemente se pierde.
-  if (Avatar3D) Avatar3D.setMouthOpen(volume, analyser);
+  // propio análisis para el lip-sync (ver avatar3d.js). También el
+  // currentTime del audio que suena ahora mismo, para que dispare en el
+  // instante correcto los beats de puntuación del segmento en curso (ver
+  // beginSpeechSegment/setSpeechSegmentDuration en playNextInQueue). Si aún
+  // no ha cargado, este frame simplemente se pierde.
+  const currentTime = currentAvatarAudio ? currentAvatarAudio.currentTime : null;
+  if (Avatar3D) Avatar3D.setMouthOpen(volume, analyser, currentTime);
   volumeMonitorHandle = requestAnimationFrame(monitorVolume);
 }
 
@@ -352,7 +356,17 @@ function stopVolumeMonitor({ forceIdle = true } = {}) {
   }
   analyser = null;
   analyserData = null;
-  if (forceIdle && Avatar3D) Avatar3D.setMouthOpen(0);
+  if (forceIdle) {
+    if (Avatar3D) Avatar3D.setMouthOpen(0);
+    // El turno del tutor (pensar + hablar, huecos entre segmentos
+    // incluidos) termina AQUÍ de verdad: no queda audio pendiente, ni
+    // porque la respuesta acabó con normalidad ni porque se cortó a
+    // propósito (Nuevo Chat, cambio de modo, abrir otra sesión). Es el
+    // único punto que desbloquea el input tras un turno normal (ver
+    // lockTurn/unlockTurn) -- forceIdle=false (audio nuevo interrumpiendo
+    // al anterior, mismo turno) no debe desbloquear nada todavía.
+    unlockTurn();
+  }
 }
 
 // ============================================================
@@ -434,17 +448,22 @@ function hideTypingIndicator() {
 }
 
 // ============================================================
-// Indicador de carga del tema proactivo (Gramática/Vocabulario/
-// Conversación libre)
+// Bloqueo del input mientras el tutor tiene el turno (pensando o hablando)
 // ============================================================
-// Se muestra desde que el backend avisa (mensaje {"type":
-// "proactive_loading"}) de que va a generar el primer mensaje de
-// iniciativa, hasta que ese mensaje llega completo (texto + audio) por el
-// canal normal, o hasta que salte el aviso de error/timeout: bloquea el
-// input mientras tanto para que el alumno no pueda escribir a mitad de la
-// carga y acabe cruzando los hilos con la respuesta que está por llegar.
-let proactiveLoadingEl = null;
-let proactiveLoadingTimeout = null;
+// Cubre TODO lo que espera una respuesta hablada del tutor (mensaje de
+// chat normal, tema proactivo, arrancar un Reto o una práctica de Moodle):
+// desde que se manda la petición hasta que el tutor termina de hablar DEL
+// TODO. Los segmentos de una misma respuesta se reproducen en cola (ver
+// playNextInQueue/audioQueue más abajo) y el input debe seguir bloqueado
+// también en los HUECOS entre segmentos, no solo mientras suena audio —
+// por eso el desbloqueo real pasa por un único punto, stopVolumeMonitor()
+// con forceIdle (ver más abajo): esa ya es la señal existente de "no queda
+// audio pendiente de este turno", tanto si acaba con normalidad como si se
+// corta a propósito (Nuevo Chat, cambio de modo, abrir otra sesión del
+// historial). lockTurn()/unlockTurn() son idempotentes (no pasa nada si se
+// llaman de más), así que cualquier punto de fallo puede desbloquear sin
+// comprobar antes si de verdad estaba bloqueado.
+let turnLocked = false;
 
 function setInputLocked(locked) {
   if (textInput) textInput.disabled = locked;
@@ -455,6 +474,29 @@ function setInputLocked(locked) {
   if (speakBtn && (recognition || canRecordAudio)) speakBtn.disabled = locked;
 }
 
+function lockTurn() {
+  if (turnLocked) return;
+  turnLocked = true;
+  setInputLocked(true);
+}
+
+function unlockTurn() {
+  if (!turnLocked) return;
+  turnLocked = false;
+  setInputLocked(false);
+}
+
+// ============================================================
+// Indicador de carga del tema proactivo (Gramática/Vocabulario/
+// Conversación libre)
+// ============================================================
+// Se muestra desde que el backend avisa (mensaje {"type":
+// "proactive_loading"}) de que va a generar el primer mensaje de
+// iniciativa, hasta que ese mensaje llega completo (texto + audio) por el
+// canal normal, o hasta que salte el aviso de error/timeout.
+let proactiveLoadingEl = null;
+let proactiveLoadingTimeout = null;
+
 function showProactiveLoading() {
   if (!proactiveLoadingEl && chatEl) {
     proactiveLoadingEl = document.createElement("div");
@@ -463,15 +505,18 @@ function showProactiveLoading() {
     chatEl.appendChild(proactiveLoadingEl);
     chatEl.scrollTop = chatEl.scrollHeight;
   }
-  setInputLocked(true);
+  lockTurn();
 
   // Red de seguridad: si por lo que sea nunca llega el mensaje (p. ej. un
   // fallo de Groq/TTS ya registrado en el backend pero sin aviso al
   // frontend en ese caso concreto), no se deja el input bloqueado
-  // indefinidamente.
+  // indefinidamente. Aquí SÍ hace falta forzar unlockTurn() explícitamente
+  // (a diferencia del final normal): si nunca llega el mensaje, tampoco va
+  // a llegar nunca el audio que dispararía el desbloqueo por su cuenta.
   clearTimeout(proactiveLoadingTimeout);
   proactiveLoadingTimeout = setTimeout(() => {
     hideProactiveLoading();
+    unlockTurn();
     addSystem("⚠️ El tema tardó demasiado en cargar. Ya puedes escribir con normalidad.");
   }, 20000);
 }
@@ -483,7 +528,10 @@ function hideProactiveLoading() {
   }
   clearTimeout(proactiveLoadingTimeout);
   proactiveLoadingTimeout = null;
-  setInputLocked(false);
+  // Ya NO desbloquea el input aquí (antes sí): en el momento en que se
+  // llama, el audio del tema propuesto está a punto de sonar o ya ha
+  // empezado a sonar -- el desbloqueo real lo hace unlockTurn() cuando
+  // termine de hablar del todo (ver stopVolumeMonitor).
 }
 
 // ============================================================
@@ -495,11 +543,12 @@ function hideProactiveLoading() {
 // "pause" no interfiera con el estado del avatar del audio nuevo.
 let currentAvatarAudio = null;
 
-// Cola de segmentos de audio TTS. El backend puede trocear una respuesta
-// (1ª frase + resto) para que el avatar empiece a hablar antes; los
-// segmentos se reproducen EN ORDEN, cada uno con su propio análisis para
-// el lip-sync. Interrumpir (respuesta nueva, Nuevo Chat, cambio de modo,
-// abrir otra sesión) vacía la cola.
+// Cola de segmentos de audio TTS: { base64, text }. El backend puede trocear
+// una respuesta (1ª frase + resto) para que el avatar empiece a hablar
+// antes; los segmentos se reproducen EN ORDEN, cada uno con su propio
+// análisis para el lip-sync y su propio texto para los beats de puntuación
+// del avatar (ver avatar-speech-sync.js). Interrumpir (respuesta nueva,
+// Nuevo Chat, cambio de modo, abrir otra sesión) vacía la cola.
 let audioQueue = [];
 let audioQueueActive = false;
 
@@ -535,15 +584,30 @@ function stopCurrentAudio({ forceIdle = true } = {}) {
 // siguiente SIN cerrar la boca del avatar entre medias: solo la cierra
 // (forceIdle) cuando la cola queda vacía.
 function playNextInQueue() {
-  const base64 = audioQueue.shift();
-  if (!base64) {
+  const segment = audioQueue.shift();
+  if (!segment) {
     audioQueueActive = false;
     return;
   }
   audioQueueActive = true;
 
-  const audio = new Audio("data:audio/mpeg;base64," + base64);
+  const audio = new Audio("data:audio/mpeg;base64," + segment.base64);
   currentAvatarAudio = audio;
+
+  // Texto de este segmento para los beats de puntuación del avatar (ver
+  // avatar-speech-sync.js): se manda ya (no depende del audio), la duración
+  // real se pasa aparte en cuanto el navegador la conoce, más abajo.
+  if (Avatar3D) Avatar3D.beginSpeechSegment(segment.text);
+  const applyDuration = () => {
+    if (Avatar3D && Number.isFinite(audio.duration)) {
+      Avatar3D.setSpeechSegmentDuration(audio.duration);
+    }
+  };
+  // Para un data: URI la duración casi nunca está lista en el mismo tick que
+  // el Audio(); "loadedmetadata" es el caso normal. El chequeo directo de
+  // arriba es solo una red de seguridad por si el navegador ya la tuviera.
+  if (Number.isFinite(audio.duration)) applyDuration();
+  else audio.addEventListener("loadedmetadata", applyDuration, { once: true });
 
   // "pause" cubre tanto el final natural (el navegador siempre dispara
   // "pause" justo antes de "ended") como cualquier corte prematuro.
@@ -569,9 +633,9 @@ function playNextInQueue() {
   });
 }
 
-function enqueueAudio(base64) {
+function enqueueAudio(base64, text) {
   if (!base64) return;
-  audioQueue.push(base64);
+  audioQueue.push({ base64, text: text || "" });
   if (!audioQueueActive) playNextInQueue();
 }
 
@@ -579,9 +643,9 @@ function enqueueAudio(base64) {
 // modo por defecto) siguen llegando como un único {text, audio_base64}.
 // Interrumpe lo que hubiera sonando y reproduce este audio como segmento
 // único.
-function playAudio(base64) {
+function playAudio(base64, text) {
   stopCurrentAudio({ forceIdle: false });
-  enqueueAudio(base64);
+  enqueueAudio(base64, text);
 }
 
 // ============================================================
@@ -638,6 +702,9 @@ function connect() {
 
     if (data.error) {
       addSystem("⚠️ " + data.error);
+      // Ningún audio va a llegar para este turno: si el input estaba
+      // bloqueado esperando respuesta, no debe quedarse así para siempre.
+      unlockTurn();
       return;
     }
 
@@ -732,6 +799,9 @@ function connect() {
     if (data.type === "error") {
       hideTypingIndicator();
       hideProactiveLoading();
+      // Igual que arriba: sin audio a la vista para este turno, el input
+      // no puede quedarse bloqueado esperándolo.
+      unlockTurn();
       addSystem("⚠️ " + data.message);
       return;
     }
@@ -755,7 +825,7 @@ function connect() {
         lastTutorMessage = (lastTutorMessage ? lastTutorMessage + " " : "") + segText;
         if (chatEl) chatEl.scrollTop = chatEl.scrollHeight;
       }
-      enqueueAudio(data.audio_base64);
+      enqueueAudio(data.audio_base64, segText);
       if (data.final) currentTutorMsgEl = null;
       return;
     }
@@ -764,7 +834,7 @@ function connect() {
     hideProactiveLoading();
     addMessage("tutor", data.text);
     lastTutorMessage = data.text || "";
-    playAudio(data.audio_base64);
+    playAudio(data.audio_base64, data.text);
   };
 
   socket.onclose = () => {
@@ -777,6 +847,11 @@ function connect() {
       disconnectNotified = true;
     }
     hideProactiveLoading();
+    // La respuesta en curso (si la había) ya no va a llegar por esta
+    // conexión: no dejar el input bloqueado esperando un audio que no
+    // vendrá. Si había uno sonando ya localmente sigue su curso; solo se
+    // libera la posibilidad de escribir el siguiente turno.
+    unlockTurn();
     scheduleReconnect();
   };
 
@@ -1021,6 +1096,10 @@ function sendText(text, inputType = "text") {
   addMessage("tu", text);
   if (socket && socket.readyState === WebSocket.OPEN) {
     socket.send(JSON.stringify({ message: text, session_id: currentSessionId, input_type: inputType }));
+    // Bloquea el input hasta que el tutor termine de responder Y de hablar
+    // del todo (ver lockTurn/unlockTurn) -- así el alumno no puede mandar
+    // un segundo mensaje mientras el primero sigue en curso.
+    lockTurn();
   } else {
     addSystem("⚠️ Sin conexión, no se envió el mensaje");
   }
@@ -1487,6 +1566,9 @@ function startExercise(ex) {
 
   if (socket && socket.readyState === WebSocket.OPEN) {
     socket.send(JSON.stringify({ type: "exercise_start", exercise: activeExercise }));
+    // El tutor va a presentar el Reto en voz alta (mismo canal de audio
+    // que un mensaje normal): bloquea el input igual que en sendText().
+    lockTurn();
   }
 
   // Marca el ejercicio como iniciado (no bloqueante: no impide arrancar el reto si falla).
@@ -1517,6 +1599,9 @@ function startMoodleExercise(ex) {
 
   if (socket && socket.readyState === WebSocket.OPEN) {
     socket.send(JSON.stringify({ type: "moodle_exercise_start", exercise_id: ex.id }));
+    // Igual que en startExercise: el tutor va a hablar (presenta la
+    // práctica / la primera pregunta), bloquea el input hasta que termine.
+    lockTurn();
   } else {
     addSystem("⚠️ Sin conexión, no se pudo iniciar la práctica");
     return;

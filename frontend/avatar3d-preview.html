@@ -7,10 +7,16 @@
   Uso:  cd frontend  &&  python -m http.server 8000
         abrir http://localhost:8000/avatar3d-preview.html
 
-  - "Elegir audio…": reproduce un MP3/WAV local enrutado por un AnalyserNode
-    igual que hace app.js con el TTS -> prueba REAL del lip-sync por bandas.
+  - "Elegir audio…" + texto: reproduce un MP3/WAV local enrutado por un
+    AnalyserNode igual que hace app.js con el TTS -> prueba REAL del
+    lip-sync por bandas Y de la sincronía de cuerpo con el habla (pausas
+    reales + beats de puntuación del texto que se escriba en el cuadro,
+    ver avatar-speech-sync.js). El panel "Gestos" de abajo va pintando cada
+    cambio de estado con su timestamp: sirve para comprobar a ojo que no
+    hay "tirones" (dos cambios pegados en el tiempo) al escuchar audio real.
   - Slider / "Hablar (auto)": mueven la boca por el camino escalar simple
-    (sin analizador), como cuando Web Audio está bloqueada.
+    (sin analizador, sin beats de texto), como cuando Web Audio está
+    bloqueada.
 -->
 <html lang="es">
 <head>
@@ -29,8 +35,15 @@
     .panel { padding: 14px 20px; }
     .row { margin: 9px 0; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
     input[type=range] { flex: 1; min-width: 160px; }
+    textarea { flex: 1; min-width: 240px; font: inherit; padding: 4px 6px; }
     button { font: inherit; padding: 6px 14px; cursor: pointer; }
     #log { font-family: ui-monospace, monospace; font-size: 12px; white-space: pre-wrap; opacity: .8; }
+    #gestureLog {
+      font-family: ui-monospace, monospace; font-size: 12px; white-space: pre-wrap;
+      max-height: 160px; overflow-y: auto; background: #fffaf2; border: 1px solid #d8c9b4;
+      padding: 6px 8px; margin-top: 4px;
+    }
+    #gestureLog .jerk { color: #b3261e; font-weight: bold; }
   </style>
   <script type="importmap">
   { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
@@ -47,13 +60,18 @@
       <button id="stopA">■ Parar</button>
     </div>
     <div class="row">
-      <label for="vol">Volumen simulado (camino escalar)</label>
+      <textarea id="segText" rows="2" placeholder="Texto del segmento (para los beats de puntuación: comas, puntos, ?). Debe corresponder aprox. al audio elegido arriba.">Well, I think that's a great question. Have you tried speaking English every day? Let's practice a bit more, shall we?</textarea>
+    </div>
+    <div class="row">
+      <label for="vol">Volumen simulado (camino escalar, sin beats de texto)</label>
       <input id="vol" type="range" min="0" max="1" step="0.01" value="0">
       <span id="volval">0.00</span>
       <button id="talk">▶︎ Hablar (auto)</button>
       <button id="stop">■</button>
     </div>
     <div id="log">cargando…</div>
+    <div class="row"><strong>Gestos (cuerpo)</strong> — cada línea es un cambio de gesture state; en rojo, dos cambios a menos de 250ms (posible "tirón" a vigilar)</div>
+    <div id="gestureLog"></div>
   </div>
 
   <script type="module">
@@ -71,9 +89,40 @@
       console.error(err);
     }
 
+    // ---- log de gestos: vigila getSpeechSyncDebugState() y pinta cada
+    // cambio de gestureState con el tiempo transcurrido desde el anterior,
+    // para verificar a ojo que la máquina de estados no "tiembla" (dos
+    // cambios pegados) cuando entra audio real. ----
+    const gestureLogEl = document.getElementById("gestureLog");
+    let lastGestureState = null;
+    let lastGestureChangeAt = 0;
+    let gestureRafHandle = null;
+    const JERK_THRESHOLD_MS = 250; // por debajo de esto, dos cambios seguidos se marcan como sospechosos
+
+    function pollGestureLog() {
+      gestureRafHandle = requestAnimationFrame(pollGestureLog);
+      if (!Avatar3D || !Avatar3D.getSpeechSyncDebugState) return;
+      const state = Avatar3D.getSpeechSyncDebugState();
+      if (state.gestureState === lastGestureState) return;
+      const now = performance.now();
+      const sinceLast = lastGestureState === null ? null : now - lastGestureChangeAt;
+      lastGestureState = state.gestureState;
+      lastGestureChangeAt = now;
+      const line = document.createElement("div");
+      const deltaTxt = sinceLast === null ? "" : ` (+${sinceLast.toFixed(0)}ms)`;
+      line.textContent =
+        `[${(now / 1000).toFixed(2)}s] -> ${state.gestureState}${deltaTxt}` +
+        `  beats ${state.beatsFired}/${state.beatsTotal}  paused=${state.paused}`;
+      if (sinceLast !== null && sinceLast < JERK_THRESHOLD_MS) line.className = "jerk";
+      gestureLogEl.appendChild(line);
+      gestureLogEl.scrollTop = gestureLogEl.scrollHeight;
+    }
+    pollGestureLog();
+
     // ---- camino REAL: audio local -> AnalyserNode -> avatar ----
     let ac = null, analyser = null, srcNode = null, audioEl = null, rafReal = null;
     const fileInput = document.getElementById("file");
+    const segTextEl = document.getElementById("segText");
 
     function stopReal() {
       if (rafReal) cancelAnimationFrame(rafReal);
@@ -96,12 +145,22 @@
       srcNode.connect(analyser);
       analyser.connect(ac.destination);
       const buf = new Uint8Array(analyser.fftSize);
+
+      // Igual que playNextInQueue() en app.js: el texto se manda ya, la
+      // duración real en cuanto el navegador la conoce.
+      Avatar3D.beginSpeechSegment(segTextEl.value);
+      const applyDuration = () => {
+        if (Number.isFinite(audioEl.duration)) Avatar3D.setSpeechSegmentDuration(audioEl.duration);
+      };
+      if (Number.isFinite(audioEl.duration)) applyDuration();
+      else audioEl.addEventListener("loadedmetadata", applyDuration, { once: true });
+
       const tick = () => {
         analyser.getByteTimeDomainData(buf);
         let sum = 0;
         for (let i = 0; i < buf.length; i++) { const v = (buf[i] - 128) / 128; sum += v * v; }
         const vol = Math.min(1, Math.sqrt(sum / buf.length) * 2.4);
-        Avatar3D.setMouthOpen(vol, analyser);
+        Avatar3D.setMouthOpen(vol, analyser, audioEl.currentTime);
         rafReal = requestAnimationFrame(tick);
       };
       audioEl.onended = stopReal;
