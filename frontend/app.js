@@ -552,9 +552,49 @@ let currentAvatarAudio = null;
 let audioQueue = [];
 let audioQueueActive = false;
 
+// true mientras estamos A MITAD de una respuesta troceada que el backend
+// TODAVÍA no ha marcado como completa (el último audio_segment recibido no
+// traía final:true). Se pone a false en cuanto llega el segmento con
+// final:true, o de entrada si la respuesta no viene troceada (playAudio).
+// Sirve para distinguir, cuando la cola de audio se queda momentáneamente
+// vacía, entre un HUECO de red/generación entre fragmentos (audioQueue
+// vacía pero responseStreaming=true: quedan más por llegar) y el FIN real
+// del turno (audioQueue vacía y responseStreaming=false) — ver advance()
+// en playNextInQueue. Antes no se distinguía: cualquier hueco vaciaba la
+// cola y se trataba como fin de turno, soltando el gesto de hablar a idle
+// y volviendo a elegir uno nuevo al azar en cuanto llegaba el siguiente
+// trozo — el "corte/reseteo" que se veía en el avatar entre fragmentos.
+let responseStreaming = false;
+
+// Red de seguridad para el hueco entre fragmentos: si el siguiente nunca
+// llega (fallo silencioso del backend a mitad de una respuesta troceada,
+// sin mensaje de error), no se deja el turno "colgado" para siempre (ni el
+// avatar en pose de hablar ni el input bloqueado). Margen amplio a
+// propósito -- el backend ya tiene sus propios timeouts largos por
+// segmento (Groq ~45s con reintentos, TTS ~30s) y esto es solo el último
+// resorte, no debe dispararse en el camino normal.
+const RESPONSE_GAP_TIMEOUT_MS = 45000;
+let responseGapTimeout = null;
+
+function scheduleResponseGapTimeout() {
+  clearResponseGapTimeout();
+  responseGapTimeout = setTimeout(() => {
+    console.warn("Tutor: no llegó el siguiente fragmento de audio a tiempo; se da la respuesta por terminada.");
+    responseStreaming = false;
+    stopVolumeMonitor({ forceIdle: true });
+  }, RESPONSE_GAP_TIMEOUT_MS);
+}
+
+function clearResponseGapTimeout() {
+  clearTimeout(responseGapTimeout);
+  responseGapTimeout = null;
+}
+
 function clearAudioQueue() {
   audioQueue = [];
   audioQueueActive = false;
+  responseStreaming = false;
+  clearResponseGapTimeout();
 }
 
 // Corta en seco el audio TTS que estuviera sonando (o todavía cargando/
@@ -582,13 +622,18 @@ function stopCurrentAudio({ forceIdle = true } = {}) {
 
 // Reproduce el siguiente segmento en cola. Al acabar uno encadena el
 // siguiente SIN cerrar la boca del avatar entre medias: solo la cierra
-// (forceIdle) cuando la cola queda vacía.
+// (forceIdle) cuando la cola queda vacía Y la respuesta ya está completa
+// (ver advance()/responseStreaming más abajo) -- si queda vacía pero
+// todavía faltan fragmentos por llegar, se mantiene la pose de hablar.
 function playNextInQueue() {
   const segment = audioQueue.shift();
   if (!segment) {
     audioQueueActive = false;
     return;
   }
+  // Llegó (o ya estaba esperando) el siguiente trozo: cancela la red de
+  // seguridad del hueco entre fragmentos, si estuviera en marcha.
+  clearResponseGapTimeout();
   audioQueueActive = true;
 
   const audio = new Audio("data:audio/mpeg;base64," + segment.base64);
@@ -613,7 +658,26 @@ function playNextInQueue() {
   // "pause" justo antes de "ended") como cualquier corte prematuro.
   const advance = () => {
     if (currentAvatarAudio === audio) currentAvatarAudio = null;
-    stopVolumeMonitor({ forceIdle: audioQueue.length === 0 });
+    const queueEmpty = audioQueue.length === 0;
+    if (!queueEmpty) {
+      // Ya hay más audio encolado (llegó a tiempo): sigue sin más.
+      stopVolumeMonitor({ forceIdle: false });
+    } else if (responseStreaming) {
+      // Cola vacía pero el backend AÚN no ha marcado esta respuesta como
+      // completa: es un hueco de red/generación entre fragmentos, no el
+      // fin del turno. No se fuerza idle ni se desbloquea el input --
+      // avatar3d.js mantiene la pose de hablar (ver Avatar3D.holdSpeechGap:
+      // usa la misma histéresis de pausa real que ya tenía, así que un
+      // hueco corto no se nota y uno largo de verdad sí suelta el gesto,
+      // con el mismo crossfade suave). Red de seguridad por si el
+      // siguiente trozo nunca llega (ver scheduleResponseGapTimeout).
+      stopVolumeMonitor({ forceIdle: false });
+      if (Avatar3D) Avatar3D.holdSpeechGap();
+      scheduleResponseGapTimeout();
+    } else {
+      // Cola vacía y la respuesta ya está completa: fin de turno real.
+      stopVolumeMonitor({ forceIdle: true });
+    }
     playNextInQueue();
   };
   audio.onpause = advance;
@@ -702,9 +766,11 @@ function connect() {
 
     if (data.error) {
       addSystem("⚠️ " + data.error);
-      // Ningún audio va a llegar para este turno: si el input estaba
-      // bloqueado esperando respuesta, no debe quedarse así para siempre.
-      unlockTurn();
+      // Ningún audio va a llegar para este turno (ni el resto de una
+      // respuesta troceada, si se cortó a mitad): corta cualquier resto de
+      // audio/gesto en curso y desbloquea el input, no se puede quedar
+      // esperando algo que ya no va a llegar.
+      stopCurrentAudio();
       return;
     }
 
@@ -799,9 +865,9 @@ function connect() {
     if (data.type === "error") {
       hideTypingIndicator();
       hideProactiveLoading();
-      // Igual que arriba: sin audio a la vista para este turno, el input
-      // no puede quedarse bloqueado esperándolo.
-      unlockTurn();
+      // Igual que arriba: sin más audio a la vista para este turno, corta
+      // lo que quedara en curso (gesto incluido) y desbloquea el input.
+      stopCurrentAudio();
       addSystem("⚠️ " + data.message);
       return;
     }
@@ -825,6 +891,11 @@ function connect() {
         lastTutorMessage = (lastTutorMessage ? lastTutorMessage + " " : "") + segText;
         if (chatEl) chatEl.scrollTop = chatEl.scrollHeight;
       }
+      // Antes de encolar: marca si esta respuesta sigue en curso (más
+      // segmentos por llegar) o si este es el último -- de eso depende si
+      // un hueco de red más adelante se trata como pausa o como fin de
+      // turno real (ver advance() en playNextInQueue).
+      responseStreaming = !data.final;
       enqueueAudio(data.audio_base64, segText);
       if (data.final) currentTutorMsgEl = null;
       return;
@@ -834,6 +905,8 @@ function connect() {
     hideProactiveLoading();
     addMessage("tutor", data.text);
     lastTutorMessage = data.text || "";
+    // Respuesta NO troceada: es de una sola pieza, nunca "sigue en curso".
+    responseStreaming = false;
     playAudio(data.audio_base64, data.text);
   };
 
@@ -847,11 +920,11 @@ function connect() {
       disconnectNotified = true;
     }
     hideProactiveLoading();
-    // La respuesta en curso (si la había) ya no va a llegar por esta
-    // conexión: no dejar el input bloqueado esperando un audio que no
-    // vendrá. Si había uno sonando ya localmente sigue su curso; solo se
-    // libera la posibilidad de escribir el siguiente turno.
-    unlockTurn();
+    // La respuesta en curso (si la había, completa o a mitad de un hueco
+    // entre fragmentos) ya no va a llegar por esta conexión: corta
+    // cualquier resto de audio/gesto y desbloquea el input, no se puede
+    // quedar esperando algo que ya no vendrá por este socket.
+    stopCurrentAudio();
     scheduleReconnect();
   };
 
