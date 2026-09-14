@@ -10,6 +10,26 @@ El alumno chatea (texto o voz) con un "profesor" que responde por escrito y con
 voz (TTS), corrige errores de forma natural y propone temas. Hay un panel de
 profesor para gestionar alumnos, ver actividad y asignar retos/tareas.
 
+## Estado actual (2026-09-13)
+
+- **Avatar 3D con gestos Mixamo**: terminado, probado en el navegador y
+  **pusheado** a `hugo967/profesor` (commit `154a6f7`) — ver sección "Avatar 3D"
+  más abajo para el detalle de la máquina de estados y la rotación de gestos.
+- **Auditoría de bugs de frontend/backend**: terminada, verificada (tests +
+  smoke test real + pruebas aisladas) y **pusheada** a ambos repos —
+  `hugo967/profesor` (commit `154a6f7`) y `hugo967/tutor-ingles-backend`
+  (commit `b5b27af`) — ver sección "Auditoría de bugs" más abajo. Render
+  redespliega solo con el push al repo de backend.
+- **Integración con Moodle**: el código está completo y no ha cambiado, pero
+  **no está configurada** en este entorno (no hay `MOODLE_URL`/`MOODLE_TOKEN`/
+  `MOODLE_COURSE_ID` en `backend/.env`) — la pestaña Ejercicios devuelve 503.
+  Ver la sección "Integración Moodle" más abajo para el checklist exacto de lo
+  que hace falta para dejarla conectada.
+- **Pendiente / conocido, sin tocar todavía**: `backend/.env` está versionado
+  en el repo `tutor-ingles-backend` con `GROQ_API_KEY` y `SUPABASE_SERVICE_KEY`
+  en texto plano (ver "Deuda / cosas a saber" más abajo) — rotar esas claves y
+  sacar `.env` del historial de git sigue pendiente de decisión del usuario.
+
 ## Estructura de repos (IMPORTANTE)
 
 Son **dos repos git independientes**, uno anidado dentro del otro:
@@ -158,10 +178,45 @@ Config: `MOODLE_URL`, `MOODLE_TOKEN`, `MOODLE_COURSE_ID`; si falta alguna → la
 pestaña Ejercicios responde 503.
 
 `gift_parser.parse_gift()`: parser pragmático de GIFT (opción múltiple, V/F, respuesta
-corta, ensayo). No implementa la spec completa a propósito.
+corta, ensayo). No implementa la spec completa a propósito (sin categorías, matching,
+numeric con tolerancia, ni escapado avanzado de `{}~=`).
 
 - `.txt` → material de repaso, el tutor lo enseña conversacionalmente.
 - `.gift` → el tutor guía pregunta a pregunta, una a una, sin revelar respuestas antes.
+
+### Checklist para dejarla conectada (estado: código listo, sin configurar)
+
+Son exactamente **3 variables de entorno**, ninguna más (ver `backend/.env.example`):
+
+| Variable | Qué es | Dónde se saca |
+|---|---|---|
+| `MOODLE_URL` | Raíz del sitio Moodle, **sin** `/webservice/...` (ej. `https://moodle.mi-centro.es`) | La URL de tu Moodle |
+| `MOODLE_TOKEN` | Token de un servicio externo con `core_course_get_contents` habilitada | Administración del sitio → Servicios web → Gestionar tokens |
+| `MOODLE_COURSE_ID` | ID numérico del curso | En la URL del curso: `.../course/view.php?id=123` → `123` |
+
+**Requisitos que hay que preparar en el propio Moodle (rol administrador) antes de
+tener el token:**
+1. Administración del sitio → General → Servicios web → **Habilitar los servicios
+   web** + habilitar el **protocolo REST**.
+2. Servicios web → **Servicios externos**: crear uno nuevo (o reutilizar uno) con
+   la función `core_course_get_contents` añadida.
+3. Servicios web → **Gestionar tokens**: generar un token para un usuario con
+   acceso de lectura al curso, asociado a ese servicio externo → eso da
+   `MOODLE_TOKEN`.
+4. Subir los materiales como ficheros `.gift` (cuestionarios) o `.txt` (repaso)
+   en cualquier sección del curso (recurso tipo "Archivo") — son los únicos dos
+   tipos que lista `moodle_client.list_course_files`.
+
+**Una vez tengas los 3 valores**, hay que ponerlos en dos sitios (no solo uno):
+- `backend/.env` en local (para probar con `uvicorn` antes de subir nada).
+- El panel de Render del servicio (Environment) para producción — Render no lee
+  el `.env` del repo para las variables que ya tiene definidas ahí (ver
+  `load_dotenv(override=not os.getenv("RENDER"))` en `main.py`), así que hace
+  falta darlas de alta también ahí para que el redeploy las recoja.
+
+Sin necesidad de tocar ni una línea de código: en cuanto esas 3 variables estén
+puestas (y el backend se reinicie / redespliegue), la pestaña Ejercicios deja de
+dar 503 y empieza a listar lo que haya en el curso.
 
 ## API REST (main.py)
 
@@ -306,6 +361,12 @@ requiere `profesor`/`1234` existente. `requirements-dev.txt`: pytest, httpx.
 - El logging del backend es deliberadamente verboso (`logger.exception`) porque Render
   captura stdout como consola del servicio: ahí aparece la causa real de fallos de
   Groq/TTS/Supabase que el alumno solo ve como error genérico.
+- ⚠️ **`backend/.env` está versionado en git** (`git ls-files` lo confirma, dentro
+  de `hugo967/tutor-ingles-backend`), con `GROQ_API_KEY` y `SUPABASE_SERVICE_KEY`
+  (la *service_role*, con acceso total a la BD) en texto plano en el historial de
+  commits. Pendiente de que el usuario decida: rotar ambas claves y sacar `.env`
+  del repo (`git rm --cached backend/.env` + `.gitignore`), y valorar si hace
+  falta purgar el historial según la visibilidad del repo.
 
 ## Auditoría de bugs (2026-09-13)
 
