@@ -188,6 +188,16 @@ const GESTURE_IDLE_VARIANT_MAX_MS = 15000;
 // Conviene seguir afinando mirando el avatar real con TTS real
 // (frontend/avatar3d-preview.html tiene un modo de prueba con texto+audio
 // para esto, ver más abajo).
+//
+// Tercera pasada (2026-09-14): respuestas troceadas en varios segmentos de
+// audio (ver holdSpeechGap más abajo) tenían un hueco de red/generación
+// entre uno y el siguiente en el que app.js dejaba de tener nada que
+// analizar -- antes eso se confundía con un fin de turno real (se soltaba
+// el gesto a idle Y se elegía uno nuevo al azar en cuanto llegaba el
+// siguiente trozo, un "corte" visible). holdSpeechGap() deja una señal de
+// "sin nivel ahora mismo" que pasa por la MISMA histéresis de pausa de
+// arriba, sin tocar isTalking: un hueco corto no se nota, uno largo de
+// verdad sí suelta el gesto con el mismo crossfade suave de siempre.
 const PAUSE_ENTER_SECONDS = 1.1;         // silencio sostenido para soltar el gesto y pasar a idle -- solo pausas largas de verdad
 const PAUSE_ENTER_SOFT_SECONDS = 0.55;   // igual, pero justo tras un beat de puntuación (ahí SÍ se espera pausa) -- sigue siendo largo, no cualquier coma
 const PAUSE_EXIT_SECONDS = 0.15;         // voz sostenida para confirmar que se ha vuelto a hablar (evita parpadeos)
@@ -961,6 +971,26 @@ export function setMouthOpen(level, analyserNode = null, currentTimeSeconds = nu
       stopTalkingAnimation();
     }
   }
+}
+
+// Se llama desde app.js cuando la cola de audio se queda momentáneamente
+// vacía PERO el backend todavía no ha marcado la respuesta como completa
+// (más fragmentos en camino: solo hay un hueco de red/generación entre
+// ellos -- ver responseStreaming/advance() en playNextInQueue, app.js). A
+// DIFERENCIA de setMouthOpen(0) (fin de turno real), esto NO toca
+// `isTalking` ni suelta el gesto de hablar: solo deja sin nivel/analizador/
+// referencia temporal este instante, exactamente como una pausa real
+// DENTRO de un mismo segmento (ver updateMouth/updateBodySpeechSync). La
+// boca cierra sola por el decaimiento normal del envelope; el cuerpo solo
+// suelta el gesto a la idle si el hueco se alarga más que
+// PAUSE_ENTER_SECONDS (con el mismo crossfade largo y suave que cualquier
+// otra pausa) -- así un hueco corto entre fragmentos no se nota, y si el
+// siguiente segmento llega antes de eso, el próximo setMouthOpen(...) con
+// analizador real retoma sin ningún salto ni "reseteo" perceptible.
+export function holdSpeechGap() {
+  externalMouthLevel = 0;
+  externalCurrentTime = null;
+  analyser = null;
 }
 
 // Se llama desde app.js justo antes de reproducir un segmento de audio
