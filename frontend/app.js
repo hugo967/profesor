@@ -206,6 +206,12 @@ let serverTranscriptionDown = false;
 // Parada de seguridad de la grabación: un clip larguísimo casi siempre es
 // que el alumno se olvidó de pulsar para enviar.
 const MAX_RECORDING_MS = 45000;
+// Umbral VAD mínimo: un clip más corto que esto es casi siempre un toque
+// accidental al botón o solo ruido de fondo/silencio, y mandarlo a Whisper
+// es justo lo que dispara alucinaciones típicas ("Thank you.", "Subtitles
+// by...") sobre audio sin habla real. Se descarta sin llamar al backend.
+const MIN_RECORDING_MS = 500;
+let recordingStartedAt = 0;
 // Última frase del tutor: se manda como sesgo a /api/transcribe para
 // orientar a Whisper hacia el vocabulario que toca.
 let lastTutorMessage = "";
@@ -1394,7 +1400,12 @@ async function startRecording() {
     const blob = new Blob(recordedChunks, { type });
     recordedChunks = [];
     recording = false;
-    if (!blob.size) {
+    const durationMs = Date.now() - recordingStartedAt;
+    // Clip demasiado corto (toque accidental, o el alumno soltó antes de
+    // decir nada): ni se manda a Whisper. Evita las alucinaciones típicas
+    // sobre silencio/ruido ("Thank you.", "Subtitles by...") y se ahorra la
+    // llamada al backend.
+    if (!blob.size || durationMs < MIN_RECORDING_MS) {
       transcribing = false;
       updateButton();
       return;
@@ -1404,6 +1415,7 @@ async function startRecording() {
 
   mediaRecorder.start();
   recording = true;
+  recordingStartedAt = Date.now();
   startingRecording = false;
   recordStopTimer = setTimeout(() => {
     if (recording) stopRecording();
