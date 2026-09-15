@@ -15,7 +15,7 @@
 // brazos/dedos). Body: ya NO se usa como idle — se sustituyó por
 // `Idle.fbx` (ver bloque "Gestos de cuerpo" más abajo) para que la idle
 // pudiera formar un único sistema homogéneo con los demás gestos de
-// Mixamo (idle_cambio, talking1-3) y así cruzar entre ellos con un
+// Mixamo (talking1-3) y así cruzar entre ellos con un
 // crossfade simétrico simple, sin trucos de peso (ver el porqué en el
 // comentario de GESTURE_CROSSFADE_SECONDS). Cara: SÍ se sigue usando —
 // `Idle.fbx` es mocap de Mixamo puro, sin blendshapes, así que el
@@ -125,10 +125,11 @@ const BAND_HIGH_HZ = [3000, 8000]; // fricativas / brillo
 // ---------- Gestos de cuerpo (Mixamo) ----------
 // Animaciones sueltas descargadas de Mixamo (mocap de cuerpo entero, no
 // tocan blendshapes de boca: el lip-sync de arriba se sigue superponiendo
-// encima sin conflicto). Idle es la pose de reposo/respirar; idle_cambio
-// rompe su rigidez de vez en cuando; talking1-3 son variaciones de gesto
-// mientras el tutor habla: la primera se elige totalmente al azar y, si el
-// turno dura más que un pase del gesto, van rotando a otra distinta de la
+// encima sin conflicto). Idle es la pose de reposo/respirar, neutra y
+// siempre igual (sin variantes que rompan la postura); talking1-3 son
+// variaciones de gesto mientras el tutor habla: la primera se elige
+// totalmente al azar y, si el turno dura más que un pase del gesto, van
+// rotando a otra distinta de la
 // que acaba de terminar (nunca se repite la inmediatamente anterior), ver
 // pickTalkingAction/startTalkingAnimation/onGestureFinished. Sobre esto se
 // monta además una sincronía con el RITMO real del habla (bloque de
@@ -152,17 +153,12 @@ const BAND_HIGH_HZ = [3000, 8000]; // fricativas / brillo
 // bind pose distintos). MIXAMO_PREFIX_RE contempla ambas variantes (con y
 // sin ":") para no volver a romperse si un futuro re-export sí lo trae.
 const GESTURE_IDLE_URL = "./avatar/Idle.fbx";
-const GESTURE_IDLE_VARIANT_URL = "./avatar/idle_cambio.fbx";
 const GESTURE_TALKING_URLS = [
   "./avatar/talking1.fbx",
   "./avatar/talking2.fbx",
   "./avatar/talking3.fbx",
 ];
 const GESTURE_CROSSFADE_SECONDS = 0.9; // crossfade largo y gradual: el cambio de postura debe leerse como fluido, no como un corte
-// Cada cuánto se dispara idle_cambio mientras el avatar está en reposo
-// (intervalo aleatorio dentro de este rango, distinto cada vez).
-const GESTURE_IDLE_VARIANT_MIN_MS = 10000;
-const GESTURE_IDLE_VARIANT_MAX_MS = 15000;
 
 // ---------- Sincronía de cuerpo con el habla ----------
 // Antes, mientras el turno durase, el gesto de hablar corría "a piñón
@@ -206,7 +202,7 @@ const BEAT_SOFT_WINDOW_SECONDS = 0.7;    // cuánto dura el umbral corto tras cr
 const QUESTION_CROSSFADE_SECONDS = 0.75; // interrogación: crossfade un pelín más vivo que el normal, pero igual de suave (único proxy de "énfasis" sin gestos dedicados)
 const GESTURE_MIN_SWITCH_MS = 3500;      // no cambiar de gesto de hablar más seguido que esto -- deja que cada postura se vea de verdad antes de la siguiente
 
-// idle, idle_cambio y los 3 talking son ahora "compañeros" del mismo
+// idle y los 3 talking son "compañeros" del mismo
 // canal de cuerpo: en todo momento hay como mucho UNO entrando (fadeIn) y
 // UNO saliendo (fadeOut), con la MISMA duración y arrancados en el mismo
 // instante (ver crossFadeBody) — así sus pesos son literalmente
@@ -237,19 +233,17 @@ let canvasEl = null;
 let loadedRoot = null;
 
 // Acciones de animación de cuerpo y máquina de estados de los gestos (ver
-// bloque "Gestos de cuerpo" más abajo). actionIdle/actionIdleVariant/
-// talkingActions son todas PARES entre sí: currentBodyAction es la que
-// está activa (o entrando) ahora mismo, siempre exactamente una — nunca
-// null una vez montado el avatar (ver mountAvatar3D). actionFace es un
-// canal aparte, solo blendshapes de cara (parpadeo/cejas/mirada del .glb
-// horneado), siempre a peso 1, independiente de todo lo anterior.
+// bloque "Gestos de cuerpo" más abajo). actionIdle/talkingActions son
+// todas PARES entre sí: currentBodyAction es la que está activa (o
+// entrando) ahora mismo, siempre exactamente una — nunca null una vez
+// montado el avatar (ver mountAvatar3D). actionFace es un canal aparte,
+// solo blendshapes de cara (parpadeo/cejas/mirada del .glb horneado),
+// siempre a peso 1, independiente de todo lo anterior.
 let actionIdle = null;
-let actionIdleVariant = null;
 let talkingActions = [];
 let actionFace = null;
 let currentBodyAction = null;
-let currentGestureState = "idle"; // "idle" | "idle_variant" | "talking" | "talking_pause"
-let idleVariantTimer = null;
+let currentGestureState = "idle"; // "idle" | "talking" | "talking_pause"
 let isTalking = false;
 
 // Sincronía de cuerpo con el habla (ver bloque de constantes de arriba).
@@ -478,7 +472,7 @@ function remapMixamoTrackNames(clip) {
 // Es obligatorio quitarla, no basta con renombrarla: Mixamo exporta la
 // posición en centímetros SIN convertir (cadera ~97-99) mientras que este
 // .glb usa metros (cadera ~0.98, estándar glTF). Como TODOS los clips de
-// cuerpo (idle, idle_cambio, talking1-3) pasan por aquí, ninguno de ellos
+// cuerpo (idle, talking1-3) pasan por aquí, ninguno de ellos
 // trae ya pista de posición — así que da igual el orden en que se crucen,
 // nunca puede colarse una en centímetros mezclada con otra en metros. Solo
 // importa si alguna vez se vuelve a usar directamente un clip del .glb sin
@@ -547,25 +541,16 @@ function configureGestureAction(action, { loopOnce = false } = {}) {
   return action;
 }
 
-// Carga idle_cambio + las 3 variantes de hablar y prepara sus
-// AnimationAction. Se llama una sola vez desde mountAvatar3D, después de
-// que la idle (Idle.fbx o el fallback del .glb) ya esté lista y montada —
-// nunca bloquea el primer frame ni el arranque del lip-sync. Cada
-// animación que falle en su descarga se descarta sola (loadMixamoClip ya
-// lo resuelve a null) sin afectar a las demás.
+// Carga las 3 variantes de hablar y prepara sus AnimationAction. Se llama
+// una sola vez desde mountAvatar3D, después de que la idle (Idle.fbx o el
+// fallback del .glb) ya esté lista y montada — nunca bloquea el primer
+// frame ni el arranque del lip-sync. Cada animación que falle en su
+// descarga se descarta sola (loadMixamoClip ya lo resuelve a null) sin
+// afectar a las demás.
 async function loadExtraGestureAnimations(fbxLoader) {
-  const [idleVariantClip, ...talkingClips] = await Promise.all([
-    loadMixamoClip(fbxLoader, GESTURE_IDLE_VARIANT_URL),
-    ...GESTURE_TALKING_URLS.map((url) => loadMixamoClip(fbxLoader, url)),
-  ]);
-
-  if (idleVariantClip) {
-    // Un solo pase: se dispara, se deja ver el gesto completo y se
-    // sostiene su última pose (clampWhenFinished) hasta que el evento
-    // "finished" (ver onGestureFinished) la manda de vuelta a la idle —
-    // así nunca "salta" al frame 0 de golpe.
-    actionIdleVariant = configureGestureAction(mixer.clipAction(idleVariantClip), { loopOnce: true });
-  }
+  const talkingClips = await Promise.all(
+    GESTURE_TALKING_URLS.map((url) => loadMixamoClip(fbxLoader, url))
+  );
 
   // Si hay más de un gesto de hablar disponible, cada uno se reproduce UNA
   // vez (loopOnce) y, al terminar, onGestureFinished elige otro distinto y
@@ -578,18 +563,16 @@ async function loadExtraGestureAnimations(fbxLoader) {
     .map((clip) => mixer.clipAction(clip));
   const rotateTalking = talkingActions.length > 1;
   talkingActions.forEach((action) => configureGestureAction(action, { loopOnce: rotateTalking }));
-
-  scheduleIdleVariant();
 }
 
 // Cruza el CUERPO (huesos) de la acción de cuerpo actual a `nextAction`
-// (idle, idle_cambio o un talking — todas PARES entre sí, ver el
+// (idle o un talking — todas PARES entre sí, ver el
 // comentario de GESTURE_CROSSFADE_SECONDS): fadeOut explícito de la que
 // estuviera activa y fadeIn explícito de la nueva, arrancados en el mismo
 // instante y con la misma duración — nunca crossFadeTo, que en three.js
 // hace fadeOut+fadeIn igual pero además puede warpear el timeScale, y aquí
 // no hace falta. `restart`=true reinicia la animación desde el frame 0
-// (el caso normal: cada disparo de idle_cambio o de un talking es un
+// (el caso normal: cada disparo de un talking es un
 // gesto nuevo; para volver a idle tampoco importa, es un bucle).
 function crossFadeBody(nextAction, { duration = GESTURE_CROSSFADE_SECONDS, restart = true } = {}) {
   if (!nextAction || nextAction === currentBodyAction) return;
@@ -602,42 +585,14 @@ function crossFadeBody(nextAction, { duration = GESTURE_CROSSFADE_SECONDS, resta
   currentBodyAction = nextAction;
 }
 
-// Programa el próximo "romper la rigidez" (idle_cambio) a un intervalo
-// aleatorio de 10-15 s. Se reprograma cada vez que se vuelve al estado
-// "idle" (al terminar de hablar, o al terminar el propio idle_cambio).
-function scheduleIdleVariant() {
-  clearTimeout(idleVariantTimer);
-  idleVariantTimer = null;
-  if (!actionIdleVariant) return; // idle_cambio.fbx no se pudo cargar
-  const delay = GESTURE_IDLE_VARIANT_MIN_MS +
-    Math.random() * (GESTURE_IDLE_VARIANT_MAX_MS - GESTURE_IDLE_VARIANT_MIN_MS);
-  idleVariantTimer = setTimeout(() => {
-    // Pudo empezar a hablar (o volver a dispararse otro idle_cambio) entre
-    // que se programó este timeout y que se cumplió: solo se dispara si
-    // seguimos realmente en reposo.
-    if (currentGestureState !== "idle") return;
-    currentGestureState = "idle_variant";
-    crossFadeBody(actionIdleVariant);
-  }, delay);
-}
-
-// mixer "finished" dispara en dos casos (las acciones LoopRepeat, como la
-// idle o un talking cuando solo se cargó uno, nunca lo disparan):
-//   - idle_cambio termina su único pase -> vuelve a idle y reprograma el
-//     siguiente idle_cambio.
-//   - un gesto de hablar (loopOnce, cuando hay >1 cargados) termina su
-//     único pase mientras se sigue hablando -> se cruza a otro gesto de
-//     hablar distinto, sin repetir el que acaba de terminar (rotación
-//     continua, ver pickTalkingAction). Si para entonces ya se dejó de
-//     hablar (currentGestureState ya no es "talking", ver
-//     stopTalkingAnimation) el evento llega tarde y no hace nada.
+// mixer "finished" dispara cuando un gesto de hablar (loopOnce, cuando hay
+// >1 cargados) termina su único pase mientras se sigue hablando -> se
+// cruza a otro gesto de hablar distinto, sin repetir el que acaba de
+// terminar (rotación continua, ver pickTalkingAction). Si para entonces ya
+// se dejó de hablar (currentGestureState ya no es "talking", ver
+// stopTalkingAnimation) el evento llega tarde y no hace nada. (La idle,
+// LoopRepeat, nunca dispara "finished".)
 function onGestureFinished(event) {
-  if (event.action === actionIdleVariant && currentGestureState === "idle_variant") {
-    currentGestureState = "idle";
-    crossFadeBody(actionIdle);
-    scheduleIdleVariant();
-    return;
-  }
   if (currentGestureState === "talking" && talkingActions.includes(event.action)) {
     rotateTalkingGesture(event.action);
   }
@@ -673,18 +628,16 @@ function rotateTalkingGesture(exclude, duration = GESTURE_CROSSFADE_SECONDS) {
 }
 
 // Se llama desde setMouthOpen() en cuanto arranca el audio de un segmento
-// nuevo (ver el flag isTalking más abajo). Interrumpe idle_cambio si
-// estuviera a mitad y elige un gesto de hablar inicial completamente al
-// azar (ver pickTalkingAction). A partir de ahí, mientras se siga hablando,
-// onGestureFinished se encarga de rotar a un gesto distinto cada vez que el
-// actual termina (crossfade de GESTURE_CROSSFADE_SECONDS, igual que aquí), y
-// updateBodySpeechSync() reacciona además a pausas reales y a beats de
-// puntuación del texto (ver bloque de constantes "Sincronía de cuerpo con
-// el habla"). pauseTracker se reinicia aquí: un turno nuevo nunca debe
-// arrancar ya "pausado" por resto de un turno anterior.
+// nuevo (ver el flag isTalking más abajo). Elige un gesto de hablar inicial
+// completamente al azar (ver pickTalkingAction). A partir de ahí, mientras
+// se siga hablando, onGestureFinished se encarga de rotar a un gesto
+// distinto cada vez que el actual termina (crossfade de
+// GESTURE_CROSSFADE_SECONDS, igual que aquí), y updateBodySpeechSync()
+// reacciona además a pausas reales y a beats de puntuación del texto (ver
+// bloque de constantes "Sincronía de cuerpo con el habla"). pauseTracker se
+// reinicia aquí: un turno nuevo nunca debe arrancar ya "pausado" por resto
+// de un turno anterior.
 function startTalkingAnimation() {
-  clearTimeout(idleVariantTimer);
-  idleVariantTimer = null;
   const next = pickTalkingAction();
   if (!next) return; // sin gestos de hablar cargados
   currentGestureState = "talking";
@@ -695,11 +648,10 @@ function startTalkingAnimation() {
 }
 
 // Se llama en cuanto la cola de audio se vacía del todo (setMouthOpen(0)
-// sin analizador, ver más abajo): vuelve a la idle y reprograma el
-// próximo idle_cambio. Puede llegar tanto desde "talking" (fin de turno
-// mientras se hablaba con normalidad) como desde "talking_pause" (el turno
-// terminó justo durante una pausa real a media frase) -- en ambos casos el
-// destino es el mismo, la idle.
+// sin analizador, ver más abajo): vuelve a la idle neutra. Puede llegar
+// tanto desde "talking" (fin de turno mientras se hablaba con normalidad)
+// como desde "talking_pause" (el turno terminó justo durante una pausa
+// real a media frase) -- en ambos casos el destino es el mismo, la idle.
 function stopTalkingAnimation() {
   if (currentGestureState !== "talking" && currentGestureState !== "talking_pause") return;
   currentGestureState = "idle";
@@ -708,7 +660,6 @@ function stopTalkingAnimation() {
   speechBeats = [];
   speechBeatIndex = 0;
   crossFadeBody(actionIdle);
-  scheduleIdleVariant();
 }
 
 // Cruza de vuelta a un gesto de hablar tras una pausa real (ver
@@ -881,7 +832,7 @@ export async function mountAvatar3D(canvas) {
     // es el clip completo del .glb con la cara incluida y no hace falta
     // un canal aparte. Se clona el clip horneado y se descarta todo lo
     // que no sea morphTargetInfluences: así este canal nunca toca ningún
-    // hueso (cero conflicto con idle/idle_cambio/talking) y se reproduce
+    // hueso (cero conflicto con idle/talking) y se reproduce
     // siempre a peso 1, para siempre, sin fadeIn/fadeOut ni relación con
     // la máquina de estados de los gestos de cuerpo.
     if (idleClip && hasBakedAnimation) {
@@ -895,12 +846,11 @@ export async function mountAvatar3D(canvas) {
 
     mixer.update(0); // aplica el frame 0 antes de encuadrar
     mixer.addEventListener("finished", onGestureFinished);
-    // SIN await: idle_cambio + los 3 talking pesan ~3.6MB en total y no
-    // deben retrasar ni el primer frame renderizado ni el arranque del
-    // lip-sync, que no dependen de ellos. Se activan solos
-    // (scheduleIdleVariant) en cuanto terminan de llegar; si tardan o
-    // fallan, el avatar mientras tanto (o para siempre, si fallan) se ve
-    // exactamente igual: solo con la idle en bucle.
+    // SIN await: los 3 talking no deben retrasar ni el primer frame
+    // renderizado ni el arranque del lip-sync, que no dependen de ellos. Se
+    // activan solos en cuanto terminan de llegar; si tardan o fallan, el
+    // avatar mientras tanto (o para siempre, si fallan) se ve exactamente
+    // igual: solo con la idle en bucle.
     loadExtraGestureAnimations(fbxLoader).catch((err) => {
       console.error("avatar3d: fallo cargando las animaciones de gesto:", err);
     });
@@ -922,11 +872,10 @@ export async function mountAvatar3D(canvas) {
   document.addEventListener("visibilitychange", handleVisibilityChange);
 
   renderLoop();
-  // Nota: idle_cambio y los talking (loadExtraGestureAnimations) se cargan
-  // en segundo plano SIN esperar aquí (ver más arriba), así que en este
-  // punto todavía pueden no estar listos — no se incluyen en este objeto
-  // de diagnóstico para no reportar falsos negativos por una carrera de
-  // red.
+  // Nota: los talking (loadExtraGestureAnimations) se cargan en segundo
+  // plano SIN esperar aquí (ver más arriba), así que en este punto todavía
+  // pueden no estar listos — no se incluyen en este objeto de diagnóstico
+  // para no reportar falsos negativos por una carrera de red.
   return {
     mouthTargetsFound: Object.fromEntries(
       MOUTH_SHAPES.map((n) => [n, mouthGroups[n].length])
@@ -1036,15 +985,12 @@ export function unmountAvatar3D() {
   if (resizeObserver) resizeObserver.disconnect();
   resizeObserver = null;
   document.removeEventListener("visibilitychange", handleVisibilityChange);
-  clearTimeout(idleVariantTimer);
-  idleVariantTimer = null;
   if (mixer) {
     mixer.removeEventListener("finished", onGestureFinished);
     mixer.stopAllAction();
   }
   mixer = null;
   actionIdle = null;
-  actionIdleVariant = null;
   talkingActions = [];
   actionFace = null;
   currentBodyAction = null;
