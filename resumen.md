@@ -13,10 +13,11 @@ profesor para gestionar alumnos, ver actividad y asignar retos/tareas.
 ## Estado actual (2026-09-14)
 
 - **Sincronía de gestos con el habla + input bloqueado mientras el tutor
-  habla**: terminado, probado (tests unitarios reales de la lógica pura +
-  revisión manual de la integración) y pusheado a `hugo967/profesor` — ver
-  sección "Avatar 3D" (subsección "Sincronía con el habla") y el bullet
-  correspondiente en "Frontend `app.js`" más abajo.
+  habla + fix del hueco entre fragmentos de audio**: terminado, probado
+  (tests unitarios reales de la lógica pura + revisión manual de la
+  integración) y **pusheado** a `hugo967/profesor` (commits `ff3fccb` y
+  `798dc7f`) — ver sección "Avatar 3D" (subsección "Sincronía de gestos con
+  el habla") y el bullet correspondiente en "Frontend `app.js`" más abajo.
 - **Avatar 3D con gestos Mixamo**: terminado, probado en el navegador y
   **pusheado** a `hugo967/profesor` (commit `154a6f7`) — ver sección "Avatar 3D"
   más abajo para el detalle de la máquina de estados y la rotación de gestos.
@@ -25,11 +26,17 @@ profesor para gestionar alumnos, ver actividad y asignar retos/tareas.
   `hugo967/profesor` (commit `154a6f7`) y `hugo967/tutor-ingles-backend`
   (commit `b5b27af`) — ver sección "Auditoría de bugs" más abajo. Render
   redespliega solo con el push al repo de backend.
-- **Integración con Moodle**: el código está completo y no ha cambiado, pero
-  **no está configurada** en este entorno (no hay `MOODLE_URL`/`MOODLE_TOKEN`/
-  `MOODLE_COURSE_ID` en `backend/.env`) — la pestaña Ejercicios devuelve 503.
-  Ver la sección "Integración Moodle" más abajo para el checklist exacto de lo
-  que hace falta para dejarla conectada.
+- **Integración con Moodle**: el código está completo y **no ha cambiado**,
+  y se releyó entero (`moodle_client.py`, `gift_parser.py`, gating en
+  `main.py`) confirmando que está listo para cuando lleguen las 3 variables
+  de entorno. Sigue **sin configurar** en este entorno (no hay
+  `MOODLE_URL`/`MOODLE_TOKEN`/`MOODLE_COURSE_ID` en `backend/.env`) — la
+  pestaña Ejercicios devuelve 503. Del lado de Moodle, el cliente solo tiene
+  que añadir la función **`core_course_get_contents`** al servicio externo
+  al generar el token (ninguna otra función hace falta: la descarga de cada
+  fichero va por `pluginfile.php` con el mismo token, no por otra función de
+  la API). Ver la sección "Integración Moodle" más abajo para el checklist
+  completo.
 - **Pendiente / conocido, sin tocar todavía**: `backend/.env` está versionado
   en el repo `tutor-ingles-backend` con `GROQ_API_KEY` y `SUPABASE_SERVICE_KEY`
   en texto plano (ver "Deuda / cosas a saber" más abajo) — rotar esas claves y
@@ -371,6 +378,24 @@ cambios de gesto. Todas las constantes están en el bloque
 `frontend/avatar3d-preview.html` tiene un modo de prueba con texto+audio real
 y un panel "Gestos" que loguea cada transición (marca en rojo dos cambios a
 menos de 250ms, indicio de tirón) para verificar a ojo sin tocar el backend.
+
+**Fix de los huecos entre fragmentos de audio (2026-09-14, commit `798dc7f`)**:
+cuando la respuesta llega troceada, un hueco de red/generación entre un
+segmento y el siguiente (la cola de audio se vacía un instante) se confundía
+con el fin real del turno -- se soltaba el gesto a idle y, al llegar el
+siguiente trozo, se elegía uno nuevo al azar: el "corte/reseteo" que se veía
+en el avatar entre fragmentos. Arreglado con:
+- `app.js`: nuevo flag `responseStreaming` (true mientras la respuesta
+  troceada no ha recibido su segmento `final:true`) para distinguir, cuando
+  la cola se vacía, entre un hueco (quedan más fragmentos) y el fin de turno
+  real -- con una red de seguridad de 45s por si el siguiente trozo nunca
+  llega, y un reset completo (`stopCurrentAudio()`) si hay un error de
+  WebSocket o se cae la conexión a mitad de una respuesta.
+- `avatar3d.js`: nueva `Avatar3D.holdSpeechGap()` -- a diferencia de
+  `setMouthOpen(0)` (parada dura), no toca `isTalking` ni suelta el gesto;
+  pasa por la MISMA histéresis de pausa real de arriba (~1.1s), así que un
+  hueco corto mantiene la pose de hablar de forma fluida y uno largo de
+  verdad sí cruza a idle con el mismo crossfade suave.
 
 ### Despliegue
 
