@@ -754,9 +754,10 @@ function connect() {
     }
     if (activeMoodleExercise) {
       // Al reconectar se pierde el estado en memoria de la conexión
-      // anterior (active_moodle_exercise vivía solo ahí, sin persistencia):
-      // se vuelve a pedir el mismo fichero desde cero, así que el tutor
-      // reinicia la práctica en vez de continuar por donde iba.
+      // anterior (active_moodle_exercise vivía solo ahí): se vuelve a pedir
+      // el mismo fichero desde cero, así que el tutor reinicia la práctica
+      // en vez de continuar por donde iba (la conversación anterior queda
+      // igualmente guardada en Historial, como cualquier otro chat).
       socket.send(JSON.stringify({ type: "moodle_exercise_start", exercise_id: activeMoodleExercise.id }));
     }
     if (currentConfig.level || currentConfig.context) sendConfig();
@@ -1621,21 +1622,45 @@ function showMainChatView() {
 
 function updateExerciseBadge() {
   const badge = document.getElementById("exercise-badge");
-  if (!badge) return;
-  if (activeExercise) {
-    badge.textContent = `🎯 Reto en curso: ${activeExercise.title}`;
-    badge.classList.remove("hidden");
-  } else if (activeMoodleExercise) {
-    badge.textContent = `📘 Práctica: ${activeMoodleExercise.title}`;
-    badge.classList.remove("hidden");
-  } else {
-    badge.classList.add("hidden");
-    badge.textContent = "";
+  if (badge) {
+    if (activeExercise) {
+      badge.textContent = `🎯 Reto en curso: ${activeExercise.title}`;
+      badge.classList.remove("hidden");
+    } else if (activeMoodleExercise) {
+      badge.textContent = `📘 Práctica: ${activeMoodleExercise.title}`;
+      badge.classList.remove("hidden");
+    } else {
+      badge.classList.add("hidden");
+      badge.textContent = "";
+    }
   }
+
+  // Nivel/Modo bloqueados solo mientras hay una práctica de Moodle activa
+  // (no un Reto): su system prompt lo sustituye por completo mientras dura
+  // (ver build_moodle_exercise_prompt en el backend), así que cambiarlos a
+  // medias no tendría ningún efecto real hasta terminar la práctica --
+  // mejor no dejar tocarlos. `disabled` bloquea la interacción de verdad;
+  // el CSS `.config-bar select:disabled` da la pista visual (opacidad +
+  // cursor not-allowed). Se re-habilitan solos en cuanto activeMoodleExercise
+  // vuelve a null (moodle_exercise_done, "Nuevo Chat", retomar del
+  // Historial...), porque esta función se llama en todos esos sitios.
+  const moodlePracticeActive = !!activeMoodleExercise;
+  if (levelSelect) levelSelect.disabled = moodlePracticeActive;
+  if (contextSelect) contextSelect.disabled = moodlePracticeActive;
 }
 
 function startExercise(ex) {
   if (!ex || !ex.id) return;
+
+  // Cada Reto/práctica arranca en un chat visualmente nuevo e
+  // independiente: si había un Reto en curso con turnos en pantalla, el
+  // backend lo archiva aparte (ver _archive_exercise_conversation, queda en
+  // Historial); si había una práctica de Moodle, ya se guardaba en vivo por
+  // su cuenta -- aquí solo se limpia la pizarra para que esos mensajes no
+  // se queden mezclados a la vista con los del ejercicio nuevo.
+  stopCurrentAudio();
+  hideProactiveLoading();
+  if (chatEl) chatEl.innerHTML = "";
 
   activeExercise = {
     id: ex.id,
@@ -1676,6 +1701,13 @@ function startExercise(ex) {
 function startMoodleExercise(ex) {
   if (!ex || !ex.id) return;
 
+  // Ver el mismo comentario en startExercise: chat visualmente nuevo e
+  // independiente por práctica, la conversación anterior (Reto o práctica
+  // de Moodle) queda archivada aparte en el backend, no se pierde.
+  stopCurrentAudio();
+  hideProactiveLoading();
+  if (chatEl) chatEl.innerHTML = "";
+
   activeMoodleExercise = { id: ex.id, title: ex.title || "" };
   window.activeMoodleExercise = activeMoodleExercise;
   // Mismo criterio que al revés en startExercise: no pueden coexistir.
@@ -1712,6 +1744,10 @@ async function loadMoodleExercises() {
       exercisesContent.innerHTML = "<p>La integración con Moodle no está configurada todavía.</p>";
       return;
     }
+    if (res.status === 409) {
+      exercisesContent.innerHTML = "<p>Tu profesor todavía no te ha asignado un curso de Moodle.</p>";
+      return;
+    }
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
     const data = await res.json();
@@ -1724,9 +1760,17 @@ async function loadMoodleExercises() {
     const rows = data.map(ex => {
       const meta = ex.type === "gift"
         ? (ex.question_count != null ? `${ex.question_count} preguntas` : "preguntas")
+        : ex.type === "assign"
+        ? "tarea"
         : "material de repaso";
+      // JSON.stringify(ex.title) metía comillas dobles literales dentro de un
+      // atributo onclick="..." también delimitado por comillas dobles, lo que
+      // rompía el HTML del botón (onclick quedaba con JS inválido y no hacía
+      // nada al pulsarlo). Mismo escapado de comilla simple que el resto de
+      // app.js (ver safeName en las filas de alumnos).
+      const safeTitle = (ex.title || "").replace(/'/g, "\\'");
       return `<li data-exercise-id="${ex.id}"><strong>${ex.title}</strong> — ${meta} `
-        + `<button type="button" onclick="window.startMoodleExercise({id:'${ex.id}', title:${JSON.stringify(ex.title)}})">▶️ Iniciar práctica</button></li>`;
+        + `<button type="button" onclick="window.startMoodleExercise({id:'${ex.id}', title:'${safeTitle}'})">▶️ Iniciar práctica</button></li>`;
     }).join("");
     exercisesContent.innerHTML = `<ul class="help-list">${rows}</ul>`;
   } catch (err) {
@@ -1756,6 +1800,29 @@ async function loadSpecificSession(sessionId) {
   // para siempre si no se limpia aquí).
   stopCurrentAudio();
   hideProactiveLoading();
+
+  // Retomar una conversación libre desde el Historial también da por
+  // terminados un Reto o una práctica de Moodle que estuvieran activos
+  // (mismo criterio que "Nuevo Chat"): sin esto, Nivel/Modo se quedarían
+  // bloqueados (ver updateExerciseBadge) aunque ya no hubiera ninguna
+  // práctica de verdad en curso, y el backend seguiría tratando el
+  // siguiente mensaje como parte de esa práctica en vez de la
+  // conversación retomada.
+  if (activeExercise) {
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ type: "exercise_end" }));
+    }
+    activeExercise = null;
+    window.activeExercise = null;
+  }
+  if (activeMoodleExercise) {
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ type: "moodle_exercise_end" }));
+    }
+    activeMoodleExercise = null;
+    window.activeMoodleExercise = null;
+  }
+  updateExerciseBadge();
 
   try {
     const res = await fetch(apiUrl(`/api/history/${sessionId}`), {
@@ -1919,6 +1986,9 @@ function renderStudentsTable(students, tbody) {
   tbody.innerHTML = students.map(s => {
     const lastConnection = s.last_connection ? new Date(s.last_connection).toLocaleString() : "—";
     const safeName = (s.name || "").replace(/'/g, "\\'");
+    const currentCourse = s.moodle_course_id || "";
+    const safeCourse = currentCourse.replace(/'/g, "\\'");
+    const courseLabel = currentCourse ? `curso ${currentCourse}` : "sin curso";
     return `
       <tr>
         <td>${s.name}</td>
@@ -1929,6 +1999,7 @@ function renderStudentsTable(students, tbody) {
           <div style="display: flex; gap: 6px; flex-wrap: wrap;">
             <button class="btn-history" onclick="window.viewStudentHistory('${s.id}', '${safeName}')">Ver Historial</button>
             <button class="btn-history" onclick="window.toggleResetPassword('${s.id}')">🔑 Restablecer contraseña</button>
+            <button class="btn-history" onclick="window.toggleMoodleCourse('${s.id}')">🎓 Moodle (${courseLabel})</button>
           </div>
         </td>
       </tr>
@@ -1943,6 +2014,20 @@ function renderStudentsTable(students, tbody) {
             <button type="button" class="btn-history" onclick="window.toggleResetPassword('${s.id}')">Cancelar</button>
           </div>
           <p id="reset-pw-feedback-${s.id}" style="margin: 4px 0 0; font-size: 0.85em;"></p>
+        </td>
+      </tr>
+      <tr id="moodle-course-row-${s.id}" class="hidden">
+        <td colspan="5">
+          <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 6px 0;">
+            <input type="text" id="moodle-course-input-${s.id}"
+                   placeholder="ID del curso de Moodle para ${s.name} (vacío = quitar)"
+                   value="${safeCourse}"
+                   style="flex: 1; min-width: 180px; padding: 6px 8px; border: 2px solid #c9a05e; border-radius: 6px; background: #f7f3e6; font-family: inherit;"
+                   onkeydown="if (event.key === 'Enter') { event.preventDefault(); window.submitMoodleCourse('${s.id}', '${safeName}'); }">
+            <button type="button" class="btn-history" onclick="window.submitMoodleCourse('${s.id}', '${safeName}')">Guardar</button>
+            <button type="button" class="btn-history" onclick="window.toggleMoodleCourse('${s.id}')">Cancelar</button>
+          </div>
+          <p id="moodle-course-feedback-${s.id}" style="margin: 4px 0 0; font-size: 0.85em;"></p>
         </td>
       </tr>
     `;
@@ -2012,6 +2097,60 @@ async function submitResetPassword(studentId, studentName) {
   }
 }
 window.submitResetPassword = submitResetPassword;
+
+function toggleMoodleCourse(studentId) {
+  const row = document.getElementById(`moodle-course-row-${studentId}`);
+  if (!row) return;
+  row.classList.toggle("hidden");
+  if (!row.classList.contains("hidden")) {
+    const input = document.getElementById(`moodle-course-input-${studentId}`);
+    if (input) input.focus();
+    const feedback = document.getElementById(`moodle-course-feedback-${studentId}`);
+    if (feedback) feedback.textContent = "";
+  }
+}
+window.toggleMoodleCourse = toggleMoodleCourse;
+
+async function submitMoodleCourse(studentId, studentName) {
+  const input = document.getElementById(`moodle-course-input-${studentId}`);
+  const feedback = document.getElementById(`moodle-course-feedback-${studentId}`);
+  const courseId = input ? input.value.trim() : "";
+
+  const current_user = getCurrentUser();
+  if (feedback) {
+    feedback.textContent = "Guardando…";
+    feedback.style.color = "#5a4630";
+  }
+
+  try {
+    const res = await fetch(apiUrl("/api/teacher/set-moodle-course"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-User-Id": current_user },
+      body: JSON.stringify({ student_id: studentId, moodle_course_id: courseId }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || `Error ${res.status}`);
+
+    if (feedback) {
+      feedback.textContent = courseId
+        ? `✓ Curso de Moodle de ${studentName} actualizado a "${courseId}".`
+        : `✓ Curso de Moodle de ${studentName} quitado.`;
+      feedback.style.color = "#3a6b3a";
+    }
+    setTimeout(() => {
+      const row = document.getElementById(`moodle-course-row-${studentId}`);
+      if (row) row.classList.add("hidden");
+      loadTeacherDashboard();
+    }, 1200);
+  } catch (err) {
+    console.error("Error asignando el curso de Moodle:", err);
+    if (feedback) {
+      feedback.textContent = "⚠️ " + err.message;
+      feedback.style.color = "#b23b3b";
+    }
+  }
+}
+window.submitMoodleCourse = submitMoodleCourse;
 
 function populateAssignStudentSelect(students) {
   const select = document.getElementById("assign-student");
