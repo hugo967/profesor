@@ -10,37 +10,79 @@ El alumno chatea (texto o voz) con un "profesor" que responde por escrito y con
 voz (TTS), corrige errores de forma natural y propone temas. Hay un panel de
 profesor para gestionar alumnos, ver actividad y asignar retos/tareas.
 
-## Estado actual (2026-09-14)
+## Estado actual (2026-09-16)
 
-- **Sincronía de gestos con el habla + input bloqueado mientras el tutor
-  habla + fix del hueco entre fragmentos de audio**: terminado, probado
-  (tests unitarios reales de la lógica pura + revisión manual de la
-  integración) y **pusheado** a `hugo967/profesor` (commits `ff3fccb` y
-  `798dc7f`) — ver sección "Avatar 3D" (subsección "Sincronía de gestos con
-  el habla") y el bullet correspondiente en "Frontend `app.js`" más abajo.
-- **Avatar 3D con gestos Mixamo**: terminado, probado en el navegador y
-  **pusheado** a `hugo967/profesor` (commit `154a6f7`) — ver sección "Avatar 3D"
-  más abajo para el detalle de la máquina de estados y la rotación de gestos.
-- **Auditoría de bugs de frontend/backend**: terminada, verificada (tests +
-  smoke test real + pruebas aisladas) y **pusheada** a ambos repos —
-  `hugo967/profesor` (commit `154a6f7`) y `hugo967/tutor-ingles-backend`
-  (commit `b5b27af`) — ver sección "Auditoría de bugs" más abajo. Render
-  redespliega solo con el push al repo de backend.
-- **Integración con Moodle**: el código está completo y **no ha cambiado**,
-  y se releyó entero (`moodle_client.py`, `gift_parser.py`, gating en
-  `main.py`) confirmando que está listo para cuando lleguen las 3 variables
-  de entorno. Sigue **sin configurar** en este entorno (no hay
-  `MOODLE_URL`/`MOODLE_TOKEN`/`MOODLE_COURSE_ID` en `backend/.env`) — la
-  pestaña Ejercicios devuelve 503. Del lado de Moodle, el cliente solo tiene
-  que añadir la función **`core_course_get_contents`** al servicio externo
-  al generar el token (ninguna otra función hace falta: la descarga de cada
-  fichero va por `pluginfile.php` con el mismo token, no por otra función de
-  la API). Ver la sección "Integración Moodle" más abajo para el checklist
-  completo.
-- **Pendiente / conocido, sin tocar todavía**: `backend/.env` está versionado
-  en el repo `tutor-ingles-backend` con `GROQ_API_KEY` y `SUPABASE_SERVICE_KEY`
-  en texto plano (ver "Deuda / cosas a saber" más abajo) — rotar esas claves y
-  sacar `.env` del historial de git sigue pendiente de decisión del usuario.
+### Resumen de la sesión de hoy (Moodle: integración + varios bugs reales encontrados jugando con ello en vivo)
+
+Todo lo de hoy está **verificado en vivo** en cada paso (WebSocket real,
+Groq/TTS reales, Supabase real, el Moodle real del cliente) según se iba
+implementando, no solo compilado. Resumen en orden, con pointer a la sección
+con el detalle completo de cada uno:
+
+1. **Moodle multi-curso + mod_page/mod_assign**: cada alumno lee el curso que
+   le asignó el profesor (ya no hay un único curso global); `moodle_client.py`
+   extrae también el HTML de páginas nativas de Moodle y el enunciado real de
+   tareas (`mod_assign_get_assignments`, habilitada por el cliente a media
+   sesión). Ver "Integración Moodle" y sus subsecciones más abajo.
+2. **Cuatro bugs reales encontrados probando el flujo end-to-end por primera
+   vez** (nunca se había probado con un alumno real con curso asignado):
+   - Botón "Iniciar práctica" no hacía nada (HTML del `onclick` roto por
+     `JSON.stringify` dentro de un atributo con comillas dobles).
+   - Con el botón ya arreglado, la práctica se quedaba con el input
+     bloqueado para siempre: nada llamaba al LLM para la primera
+     intervención del tutor (arreglado con `send_exercise_kickoff`,
+     reutilizado también para Retos).
+   - El kickoff de una tarea (mod_assign) era genérico ("Sure, go
+     ahead..."): el enunciado real llegaba al prompt pero mal enmarcado.
+   - Cambiar de práctica/Reto a medias mezclaba las instrucciones de ambos
+     en el contexto del LLM (`del messages[1:]` que faltaba).
+   Ver "Bug: ..." en "Integración Moodle" más abajo para cada uno.
+3. **Prácticas de Moodle unificadas en Historial, como un chat normal**: se
+   probó primero una pestaña "Progreso" separada con ventana de reanudación
+   de 1h (columnas nuevas en `chat_sessions`, endpoint y UI dedicados) —
+   **revertido a petición del cliente** por simplicidad: ahora se guardan
+   turno a turno exactamente igual que la conversación libre o un tema
+   propuesto, sin ningún concepto nuevo, y aparecen en `GET /api/history`
+   mezcladas con el resto. Ver "Prácticas de Moodle guardadas como chats
+   normales" más abajo.
+4. **Cobertura completa del contenido de una práctica `.txt`**: el tutor ya
+   no se queda enganchado al primer tema/palabra del documento — cubre todos
+   los puntos a lo largo de la práctica. Ver "Cobertura completa..." más
+   abajo.
+5. **Bug: el tutor revelaba la traducción dentro de su propia pregunta** en
+   tareas de producción libre (p. ej. "¿Cómo dirías 'We are friends' en
+   inglés?", entregando la respuesta). Arreglado con la nueva regla
+   `_MOODLE_FREE_PRODUCTION_CUE_RULE` (aplicada a los branches `"txt"` y
+   `"assign"` de `build_moodle_exercise_prompt`): nunca inventar/revelar una
+   frase objetivo en inglés, dar una pista situacional en español y dejar
+   intentar al alumno antes de corregir. Ver "Bug: el tutor revelaba..." más
+   abajo.
+6. **Frontend: Nivel/Modo bloqueados durante una práctica de Moodle**: los
+   desplegables `#level-select`/`#context-select` se deshabilitan
+   (visual + funcionalmente) mientras hay una práctica de Moodle activa, y
+   se reactivan solos al pulsar "Nuevo Chat" o al retomar una conversación
+   libre desde Historial (hueco real que había en `loadSpecificSession`,
+   arreglado de paso). Sin verificación en navegador real (Chromium no se
+   pudo instalar en este entorno, sin salida a esa CDN) — verificado por
+   revisión de código, `disabled`/`:disabled` son comportamiento nativo
+   del navegador. Ver "Nivel/Modo bloqueados..." más abajo.
+
+**Pendiente / conocido, sin resolver hoy**:
+- `backend/.env` sigue versionado en el repo con `GROQ_API_KEY` y
+  `SUPABASE_SERVICE_KEY` en texto plano (ver "Deuda / cosas a saber" más
+  abajo) — rotar esas claves y sacarlo del historial de git sigue
+  pendiente de decisión del usuario. Hoy además se le añadió
+  `MOODLE_URL`/`MOODLE_TOKEN` en local para poder probar contra el Moodle
+  real del cliente — **`backend/.env` se dejó fuera a propósito del commit
+  de cierre de hoy** (no se quiso sumar un secreto más al historial de git
+  mientras esa decisión sigue pendiente); sigue **igual de pendiente que
+  antes** darlos de alta a mano en el panel de Render (Environment) para
+  que la integración de Moodle funcione en producción.
+- Falta asignar `moodle_course_id` a más alumnos aparte de `Hugo` (curso
+  `id=2`, usado para todas las pruebas de hoy) desde el panel de profesor.
+- Si se cambia la contraseña de `profesor` (pedido en la sesión pero NO
+  ejecutado, solo se explicaron los pasos a mano), hay que actualizar
+  también `backend/tests/test_auth.py` (hardcodea `profesor`/`1234`).
 
 ## Estructura de repos (IMPORTANTE)
 
@@ -104,6 +146,10 @@ Groq tiene `timeout=45s` + `max_retries=2`; TTS tiene `asyncio.wait_for` a 30s.
   attempts, score, timestamps.
 - `topic_history`: (user_id, context, topic_key) único — temas proactivos ya dados,
   para no repetirlos. Esquema en `sql/create_topic_history.sql`.
+- `users.moodle_course_id` (nullable, text): curso de Moodle asignado a ese alumno
+  (ver sección "Integración Moodle"). Columna añadida por
+  `sql/add_moodle_course_id.sql` — **pendiente de ejecutar en Supabase**
+  (2026-09-16).
 
 **Los scripts SQL de `backend/sql/` se ejecutan a mano en el SQL Editor de Supabase**
 (no se puede correr DDL con la service_role key vía PostgREST).
@@ -140,9 +186,13 @@ Mensajes entrantes (JSON con `type`):
 - mensaje normal (`{message, session_id, input_type}`): turno de conversación.
 
 Un Reto y una práctica de Moodle **no pueden estar activos a la vez** (arrancar uno
-cierra el otro). Los turnos dentro de un Reto o práctica de Moodle **no se guardan**
-en `chat_sessions`/`chat_messages` (decisión deliberada: no se pueden reanudar desde
-el Historial).
+cierra el otro). Los turnos de un Reto **no se guardan** en `chat_sessions`/
+`chat_messages` mientras está activo (decisión deliberada: no se puede reanudar
+desde el Historial; si se abandona a medias se archiva aparte, ver
+`_archive_exercise_conversation`). Los turnos de una **práctica de Moodle SÍ se
+guardan**, como un chat_session normal, desde el primer mensaje del tutor —
+aparece en Historial igual que la conversación libre o un tema propuesto (ver
+sección "Prácticas de Moodle guardadas como chats normales" más abajo).
 
 Mensajes salientes: `welcome`, `config_ok`, `session`, `proactive_loading`, `typing`,
 `{text, audio_base64}` (respuesta normal), `exercise_ack`, `exercise_completed`
@@ -186,8 +236,316 @@ haya visto (`topic_history`), lo presenta con voz propia + audio, y antepone
 **Solo lectura, sin persistencia.** Lee en caliente los `.gift`/`.txt` del curso vía
 Web Services (`core_course_get_contents`) con caché en memoria de ~60s. El `wstoken`
 nunca llega al frontend; el `id` que ve el cliente es un hash SHA1 corto del fileurl.
-Config: `MOODLE_URL`, `MOODLE_TOKEN`, `MOODLE_COURSE_ID`; si falta alguna → la
-pestaña Ejercicios responde 503.
+
+### Multi-curso (2026-09-16): el curso ya no es global
+
+El diseño original era **un único curso para toda la app** (`MOODLE_COURSE_ID`
+global). El cliente avisó de que en su Moodle real distintos alumnos están en
+distintos cursos, así que se rediseñó:
+
+- `MOODLE_URL` y `MOODLE_TOKEN` **siguen siendo globales** (un solo sitio Moodle,
+  un solo token de servicio — un token no está atado a un curso concreto).
+- El curso pasa a ser **un dato por alumno**: columna `users.moodle_course_id`
+  (nullable; ver `sql/add_moodle_course_id.sql`, sección "Modelo de datos"),
+  que asigna el profesor desde su panel con el nuevo botón "🎓 Moodle" por
+  alumno en la tabla de `frontend/app.js` (`toggleMoodleCourse`/
+  `submitMoodleCourse`) → `POST /api/teacher/set-moodle-course` (mismo patrón
+  que `reset-password`: protegido a `role == "teacher"`, identifica al alumno
+  por `student_id` o `username`, `moodle_course_id` vacío/null lo quita).
+- `GET /api/moodle/exercises` y el `moodle_exercise_start` del WebSocket ya no
+  usan una variable global: leen el `moodle_course_id` del alumno autenticado
+  (del `user` ya cargado en la conexión del WS, o de `get_user_by_id` en el
+  endpoint REST). Si el alumno no tiene curso asignado → **409** con mensaje
+  claro ("Tu profesor todavía no te ha asignado un curso de Moodle"), no el 503
+  genérico (ese se reserva para cuando falta `MOODLE_URL`/`MOODLE_TOKEN`).
+
+**Bug de aislamiento detectado y arreglado antes de implementar esto**: la
+caché (`_list_cache`) y el índice de ficheros (`_file_index`) de
+`moodle_client.py` eran **un único diccionario global**, no por curso — diseño
+razonable mientras solo existía un curso para toda la app, pero con
+multi-curso hubiera mezclado contenidos entre alumnos con curso distinto (dos
+alumnos abriendo Ejercicios en la misma ventana de 60s podían recibir el
+listado cacheado del curso del otro) y abría una vía de **IDOR**: un
+`exercise_id` (hash de 12 caracteres del fileurl) de un curso podía resolverse
+igual desde `get_file_content` aunque se pidiera con el `course_id` de otro
+alumno, porque el índice no comprobaba a qué curso pertenecía. Arreglado
+indexando ambos por `course_id` (`Dict[course_id, {...}]`), así un alumno
+nunca puede recibir ficheros de un curso que no es el suyo.
+
+### Módulos nativos de Moodle: mod_page y mod_assign (2026-09-16)
+
+`list_course_files`/`get_file_content` (`moodle_client.py`) ya no solo leen ficheros
+`.gift`/`.txt` adjuntos (mod_resource): también extraen texto de dos tipos de
+actividad nativa de Moodle que no son un fichero descargable normal:
+
+- **mod_page**: el cuerpo de la página llega en `contents` como un fichero HTML
+  "virtual" (típicamente `index.html`, `mimetype: text/html`) — se descarga igual
+  que cualquier fichero y se le quita el marcado con un extractor propio basado en
+  `html.parser.HTMLParser` de la stdlib (`_html_to_text`, sin dependencias nuevas):
+  descarta `<script>`/`<style>`, convierte etiquetas de bloque (`p`, `br`, `li`,
+  `div`, `h1-h6`, `tr`) en saltos de línea.
+- **mod_assign**: el enunciado no aparece en `contents` en absoluto, solo en el
+  campo `description` del módulo — y Moodle únicamente lo manda si el profesor
+  marcó "Mostrar descripción en la página del curso". Se genera una entrada
+  sintética (sin `fileurl`, contenido ya resuelto en la propia respuesta de
+  `core_course_get_contents`) cuando esa descripción existe; si no existe, la
+  tarea simplemente no aparece en Ejercicios.
+
+**Verificado contra el Moodle real del cliente (curso `id=2`)**: al inspeccionar
+`core_course_get_contents` para ese curso, "Possessive_vocabulary" y "Possesive
+Pronouns" resultaron ser **mod_resource con un `.txt` adjunto** (no mod_page como
+se pensaba) — ya cubiertos por el código *anterior* a este cambio, sin necesidad
+de la lógica nueva. La tarea "Escriu 5 frases amb el verb To Be" sí es mod_assign;
+en un primer momento no tenía `description` en `core_course_get_contents` (el
+profesor no había marcado "Mostrar descripción en la página del curso") y
+`mod_assign_get_assignments` no estaba habilitada en el servicio externo del
+cliente (`accessexception`).
+
+**Resuelto (2026-09-16)**: el usuario añadió `mod_assign_get_assignments` al
+servicio "TutorIA" en Moodle. `moodle_client.py` ahora la usa como fuente
+principal del enunciado (`_fetch_assign_intros`, indexado por `cmid` = el mismo
+`id` de módulo de `core_course_get_contents`), con el campo `description` de
+`core_course_get_contents` como *fallback* solo por si algún día esa función no
+está disponible para otro cliente. Re-probado en vivo contra el curso 2: la
+entrada de la tarea ya sale con su enunciado real, `"Usa la teva imaginació i
+escriu 5 frases amb el verb To Be"` (intro en catalán tal cual está en Moodle,
+pasada por `_html_to_text`) — sin `fileurl` (viene inline de
+`mod_assign_get_assignments`, no hay fichero que descargar).
+
+### Bug: el botón "Iniciar práctica" no hacía nada (2026-09-16)
+
+Al probar las 3 prácticas end-to-end (los dos `.txt` + la tarea de assign) en la
+pestaña Ejercicios, pulsar "Iniciar práctica" no arrancaba la conversación con el
+avatar -- para las 3, no solo la de assign. Causa: `loadMoodleExercises()` en
+`frontend/app.js` montaba el `onclick` del botón con
+`title:${JSON.stringify(ex.title)}`, que envuelve el título en comillas dobles
+*literales*; esas comillas caían dentro de un atributo `onclick="..."` delimitado
+también con comillas dobles, así que el HTML del botón quedaba cortado en la
+primera comilla y el `onclick` resultante era JS inválido (no lanzaba error
+visible, simplemente no hacía nada al pulsar). Bug preexistente a esta sesión,
+nunca se había probado antes porque no había ningún alumno con
+`moodle_course_id` asignado hasta ahora. Arreglado usando el mismo patrón de
+escapado que ya usa el resto de `app.js` (comillas simples + `.replace(/'/g,
+"\\'")`, igual que `safeName` en las filas de alumnos) en vez de
+`JSON.stringify`. Confirmado con `node --check` y renderizando el markup a mano
+con los 3 títulos reales del curso. El backend (`moodle_client.py`/`main.py`) ya
+funcionaba bien para la entrada de assign sin `fileurl` -- probado en vivo antes
+de este fix, no era la causa.
+
+### Bug: "Iniciar práctica"/"Iniciar Reto" se quedaban pillados sin hablar (2026-09-16)
+
+Después del fix del botón, la práctica sí arrancaba (banner + mensaje "Práctica
+iniciada") pero se quedaba ahí: el avatar nunca decía nada y el input se quedaba
+bloqueado para siempre. Causa real, en el **backend**, no en `app.js`: los
+manejadores `exercise_start` y `moodle_exercise_start` (`main.py`) solo mandaban
+su `*_ack` y ya está -- a diferencia de los temas proactivos
+(`send_proactive_topic_message`), nada llamaba al LLM para generar la primera
+intervención del tutor. Como el frontend hace `lockTurn()` al arrancar un Reto/
+práctica (comentario ya existente: "el tutor va a presentar el Reto en voz
+alta") y el único sitio que desbloquea el input es `stopVolumeMonitor
+({forceIdle:true})` tras reproducir el audio de un turno, sin ningún mensaje
+`{text, audio_base64}` (ni error) el input se quedaba bloqueado sin ninguna red
+de seguridad -- a diferencia de los temas proactivos, que sí tienen un timeout
+de 45s. `app.js`/`startMoodleExercise` en sí estaba bien: recibía `{id, title}`
+correctamente y el mensaje que ya manejaba (`{text, audio_base64}`) es
+exactamente el mismo formato que ya procesa el bloque genérico de respuesta del
+tutor (sin necesidad de tocar el frontend).
+
+Arreglado con `send_exercise_kickoff()` (nueva función en `main.py`, mismo
+patrón que `send_proactive_topic_message`: `get_ai_response(messages)` con solo
+el system prompt del Reto/práctica ya construido, sin mensaje de alumno, más
+`text_to_speech_base64` y `messages.append(...)` para que el turno quede en el
+historial en memoria) -- se llama justo después de cada `*_ack`. Si falla
+(Groq/TTS caídos), manda `{"type":"error", ...}` (dispara la misma red de
+desbloqueo que ya usa el resto del chat) y aborta el Reto/práctica devolviendo
+`messages[0]` al prompt normal, en vez de dejar el backend con un Reto "activo"
+fantasma. Probado en vivo con un smoke test real por WebSocket (login como
+`Hugo`, que ya tiene `moodle_course_id=2` asignado) contra Groq/TTS reales:
+tanto `moodle_exercise_start` (la tarea de assign) como `exercise_start` (un
+Reto sintético) ya mandan `*_ack` → `typing` → `{text, audio_base64}` con
+contenido real.
+
+### Bug: el kickoff de una tarea mod_assign no sabía qué pedir (2026-09-16)
+
+Con el fix anterior el avatar ya hablaba primero, pero para la tarea de assign
+decía algo genérico ("Sure, go ahead and translate that sentence") en vez de
+pedir lo que de verdad marca el enunciado. Causa: `moodle_exercise_start`
+metía el contenido de CUALQUIER entrada no-GIFT (ficheros `.txt` de repaso
+reales, y también el enunciado corto de un mod_assign) bajo el mismo
+`kind: "txt"`, y `build_moodle_exercise_prompt` lo enmarca como "reference
+material... teach it conversationally, ask questions about it" -- un marco
+pensado para un documento de lectura largo, no para una instrucción de una
+frase como "Usa la teva imaginació i escriu 5 frases amb el verb To Be". El
+contenido SÍ llegaba completo al prompt (no era un problema de datos vacíos);
+el problema era el marco/instrucciones alrededor.
+
+Arreglado etiquetando el origen desde `moodle_client.py` (la entrada generada
+a partir de `mod_assign_get_assignments`/`description` lleva ahora
+`"kind": "assign"`) y propagando esa distinción hasta un tercer branch nuevo
+en `build_moodle_exercise_prompt` (`kind == "assign"`): le dice al LLM que
+lo que sigue es el enunciado real de una tarea (posiblemente en otro idioma),
+que se lo explique al alumno en inglés y lo guíe a producirlo paso a paso
+(nunca resolverlo por él), con el mismo tag `[MOODLE_DONE]` al terminar. El
+endpoint `GET /api/moodle/exercises` y el frontend también distinguen el tipo
+`"assign"` (antes cualquier no-GIFT salía como "material de repaso"; ahora
+una tarea sale como "tarea"). Probado en vivo por WebSocket: el kickoff ahora
+dice *"Your teacher wants you to write five simple sentences in English that
+use the verb 'to be'... ¿Cómo dirías "Yo soy estudiante" en inglés?"*.
+
+### Cambiar de tarea a medias ya no mezcla instrucciones (2026-09-16)
+
+`exercise_start`/`moodle_exercise_start` reemplazaban `messages[0]` (el system
+prompt) pero nunca limpiaban `messages[1:]` -- si el alumno arrancaba una
+práctica nueva (o un Reto) mientras otra ya llevaba turnos intercambiados
+(sin pasar por `_end`), esos turnos viejos se quedaban en el historial en
+memoria que ve el LLM, mezclados con el system prompt del ejercicio nuevo: el
+tutor podía arrastrar instrucciones de la tarea anterior a la nueva.
+
+Arreglado en `main.py`: `exercise_start`/`moodle_exercise_start` hacen ahora
+`del messages[1:]` incondicionalmente antes de fijar el prompt del ejercicio
+nuevo, para que el LLM lo arranque sin ningún turno anterior en el contexto.
+Para un Reto (`active_exercise`) abandonado a medias, sus turnos se archivan
+antes con `_archive_exercise_conversation()` (nunca se guardan en vivo, así
+que sin esto se perderían del todo) como una sesión propia ya cerrada
+(`chat_sessions`/`chat_messages`, título `"Práctica: {título}"`), visible
+desde Historial igual que cualquier otra conversación. Para una práctica de
+Moodle abandonada no hace falta archivar nada: se guarda en vivo desde el
+principio (ver más abajo), así que basta con dejar de referenciarla.
+
+En `frontend/app.js`, `startExercise`/`startMoodleExercise` limpian la
+pizarra del chat (mismo patrón que el botón "Nuevo Chat": `stopCurrentAudio()`
++ `hideProactiveLoading()` + vaciar `chatEl`) antes de arrancar el
+Reto/práctica nuevo, para que se vea como una conversación realmente nueva y
+no arrastre visualmente los mensajes del ejercicio anterior.
+
+Probado en vivo por WebSocket: tarea de assign ("to be") con un turno de
+alumno intercambiado → cambio a la práctica de vocabulario de posesivos sin
+terminar la anterior → el kickoff de la práctica nueva habla de bicicletas/
+posesión (el contenido real de ese `.txt`), sin ninguna mención a "to be".
+
+### Prácticas de Moodle guardadas como chats normales (2026-09-16)
+
+Se probó primero una separación en una pestaña "Progreso" aparte (sesiones
+etiquetadas con columnas nuevas en Supabase, ventana de 1h para retomar,
+endpoint y pestaña dedicados) — **revertido a petición del cliente** por
+simplicidad: quería las prácticas de Moodle tratadas exactamente igual que
+la conversación libre o un tema propuesto, sin ningún concepto nuevo que
+aprender. La migración SQL de esa vía (`add_moodle_session_fields.sql`)
+nunca llegó a ejecutarse en Supabase, así que revertir no dejó ninguna
+columna huérfana.
+
+Diseño actual, final: `moodle_exercise_start` (`main.py`) crea la sesión con
+`create_chat_session()` normal y corriente (mismo `title` de siempre,
+`"Práctica: {título}"`, sin ninguna columna ni marca especial) ya desde el
+kickoff, para que hasta la primera frase del tutor quede guardada aunque el
+alumno no llegue a responder nada. Cada turno posterior se persiste con
+`_persist_message_bg()` -- el mismo mecanismo en segundo plano que ya usaba
+la conversación libre, en los dos mismos puntos del código (turno del
+alumno, turno del tutor), solo que condicionado a `moodle_session_id` (la
+variable en memoria de esta conexión) en vez de al `session_id` de chat
+libre. Al cambiar de práctica/Reto, terminarla (`moodle_exercise_end`) o
+completarla (`[MOODLE_DONE]`) simplemente se deja de referenciar
+(`moodle_session_id = None`) -- **sin** llamar a `end_chat_session()`: mismo
+trato que la conversación libre, que tampoco cierra explícitamente su sesión
+al cambiar de Contexto, solo dispara al desconectar (`_safe_end_session`).
+
+Resultado: **cero conceptos nuevos**. Las prácticas de Moodle aparecen en
+`GET /api/history` mezcladas con el resto de conversaciones, ordenadas por
+fecha igual que todo, y se abren con el mismo `loadSpecificSession()`/`GET
+/api/history/{session_id}` que ya usaba el Historial (sin cambios en ese
+código: nunca resetea ni borra nada, solo reproduce los mensajes guardados en
+el chat). El reconnect del WebSocket con una práctica de Moodle activa volvió
+también a su comportamiento original (reinicia la práctica desde cero al
+reconectar, [[ws-reconnect-resume]] sigue aplicando igual que a los Retos) --
+la conversación previa a la desconexión queda igualmente a salvo en
+Historial, solo que el hilo en memoria que ve el LLM no se retoma.
+
+Verificado en vivo (WebSocket real + Supabase real): la sesión de una
+práctica queda como una fila normal de `chat_sessions` (`ended_at` nunca se
+toca mientras sigue "activa" en memoria, igual que el chat libre), sus
+turnos en orden en `chat_messages`, y aparece correctamente listada en `GET
+/api/history` y legible completa vía `GET /api/history/{session_id}`.
+
+### Cobertura completa del contenido de una práctica .txt (2026-09-16)
+
+El branch `"txt"` de `build_moodle_exercise_prompt` decía "teach it
+conversationally, ask questions about it" sin más -- en la práctica el
+tutor solía quedarse enganchado al primer tema/palabra del documento
+(p. ej. las primeras palabras de una lista de vocabulario) sin llegar nunca
+a las demás en una conversación de duración normal. Reescrito para pedirle
+explícitamente al LLM que, antes de la primera respuesta, descomponga el
+material en sus temas/puntos distintos, y que a lo largo de TODA la
+práctica vaya cubriéndolos uno a uno -- con una transición natural (nunca
+un salto brusco ni un anuncio tipo "ahora vamos con el punto 2") en cuanto
+un punto ya se ha practicado razonablemente, priorizando cubrir terreno
+frente a alargarse en uno solo. Solo afecta al branch "txt" (repaso libre);
+"gift" (preguntas concretas) y "assign" (una tarea puntual) ya tenían su
+propia lógica de progresión y no la necesitaban.
+
+### Bug: el tutor revelaba la traducción dentro de su propia pregunta (2026-09-16)
+
+En tareas de producción libre (p. ej. la de assign "escribe 5 frases con el
+verbo to be"), el tutor a veces decía cosas como *"¿Cómo dirías 'We are
+friends' en inglés?"* -- entregando la respuesta en inglés dentro de la
+propia pregunta en español. Causa: la regla de `SYSTEM_PROMPT` para pedir
+que el alumno traduzca algo (`¿Cómo dirías "..." en inglés?`, con una frase
+en ESPAÑOL dentro de las comillas) está pensada para traducir una frase
+concreta que el tutor ya tiene en mente -- pero en una tarea de producción
+libre (el alumno inventa su propia frase, no traduce una dada) no hay
+ninguna frase española real que poner ahí, así que el modelo se inventaba
+un "objetivo" en inglés y lo metía en las comillas, violando sin darse
+cuenta la regla que se supone debía seguir.
+
+Arreglado con una nueva regla compartida (`_MOODLE_FREE_PRODUCTION_CUE_RULE`
+en `main.py`), añadida a los branches `"txt"` y `"assign"` de
+`build_moodle_exercise_prompt` (los dos que pueden pedir producción libre;
+`"gift"` no, tiene respuestas concretas): le explica al modelo que el cue de
+traducción no aplica aquí, que NUNCA invente ni revele una frase objetivo en
+inglés (ni siquiera "por ejemplo, podrías decir..."), y que en su lugar dé
+una pista situacional en español sin la traducción, dejando que el alumno
+intente su propia frase antes de corregir -- con el ejemplo exacto que pidió
+el cliente ("Para la primera frase, ¿cómo describirías a un amigo o cómo te
+presentarías usando el verbo 'to be'?").
+
+Probado en vivo por WebSocket, 3 arranques limpios de la tarea de assign
+("to be"): las 3 veces el tutor usó ese patrón situacional casi textual, sin
+revelar ninguna frase en inglés, y esperó la frase del alumno antes de
+valorarla.
+
+### Nivel/Modo bloqueados durante una práctica de Moodle (2026-09-16, frontend)
+
+Los desplegables "Nivel" y "Contexto / Objetivo" de la barra superior
+(`#level-select`/`#context-select`) ahora se deshabilitan (`disabled` +
+opacidad reducida/cursor `not-allowed` vía CSS) mientras hay una práctica de
+Moodle activa: cambiarlos no tendría ningún efecto real hasta terminar la
+práctica, porque su system prompt (`build_moodle_exercise_prompt`) sustituye
+por completo al de nivel/contexto mientras dura. Los Retos (`active_exercise`)
+**no** bloquean estos selects -- solo se pidió para prácticas de Moodle.
+
+Implementado extendiendo `updateExerciseBadge()` (`app.js`) en vez de añadir
+llamadas nuevas: esa función ya se invoca en todos los puntos donde
+`activeMoodleExercise` cambia (arrancar la práctica, `moodle_exercise_done`,
+"Nuevo Chat"), así que el lock/desbloqueo queda sincronizado gratis en todos
+ellos. El único hueco real era `loadSpecificSession()` (retomar una
+conversación libre desde el Historial): antes no daba por terminada una
+práctica de Moodle que estuviera activa, así que ahora también manda
+`moodle_exercise_end`/`exercise_end` y limpia el estado en memoria, igual que
+ya hacía "Nuevo Chat" -- sin esto, los selects se habrían quedado
+bloqueados (y el backend habría seguido tratando el siguiente mensaje como
+parte de la práctica) al retomar un chat libre desde ahí.
+
+**Sin verificación visual en navegador real**: se intentó instalar Chromium
+para Playwright y probar el flujo completo de verdad (login como `Hugo` vía
+`localStorage`, sin necesitar su contraseña ya que ni el login por
+`localStorage` ni el WebSocket la comprueban, arrancar una práctica,
+capturar pantalla), pero la descarga del binario (`cdn.playwright.dev`)
+falló repetidamente por timeout de red en este entorno -- no hay salida a
+esa CDN. Queda verificado por revisión de código: `disabled` en un
+`<select>` nativo y `select:disabled` en CSS son comportamiento estándar del
+navegador sin lógica propia que pueda fallar, y se repasó a mano cada punto
+donde `activeMoodleExercise` cambia para confirmar que `updateExerciseBadge()`
+se llama siempre ahí. Pendiente de que el usuario lo confirme a ojo en el
+navegador.
 
 `gift_parser.parse_gift()`: parser pragmático de GIFT (opción múltiple, V/F, respuesta
 corta, ensayo). No implementa la spec completa a propósito (sin categorías, matching,
@@ -196,15 +554,15 @@ numeric con tolerancia, ni escapado avanzado de `{}~=`).
 - `.txt` → material de repaso, el tutor lo enseña conversacionalmente.
 - `.gift` → el tutor guía pregunta a pregunta, una a una, sin revelar respuestas antes.
 
-### Checklist para dejarla conectada (estado: código listo, sin configurar)
+### Checklist para dejarla conectada (estado: código listo, falta configurar y probar)
 
-Son exactamente **3 variables de entorno**, ninguna más (ver `backend/.env.example`):
+Ya no son 3 variables de entorno — son **2 variables globales + 1 dato por alumno**:
 
-| Variable | Qué es | Dónde se saca |
+| Qué | Qué es | Dónde se saca / se pone |
 |---|---|---|
-| `MOODLE_URL` | Raíz del sitio Moodle, **sin** `/webservice/...` (ej. `https://moodle.mi-centro.es`) | La URL de tu Moodle |
-| `MOODLE_TOKEN` | Token de un servicio externo con `core_course_get_contents` habilitada | Administración del sitio → Servicios web → Gestionar tokens |
-| `MOODLE_COURSE_ID` | ID numérico del curso | En la URL del curso: `.../course/view.php?id=123` → `123` |
+| `MOODLE_URL` (env, global) | Raíz del sitio Moodle, **sin** `/webservice/...` | La URL de tu Moodle |
+| `MOODLE_TOKEN` (env, global) | Token de un servicio externo con `core_course_get_contents` habilitada | Administración del sitio → Servicios web → Gestionar tokens |
+| `users.moodle_course_id` (por alumno, en Supabase) | ID numérico del curso de Moodle de ESE alumno | Panel de profesor → botón "🎓 Moodle" de cada fila |
 
 **Requisitos que hay que preparar en el propio Moodle (rol administrador) antes de
 tener el token:**
@@ -214,21 +572,34 @@ tener el token:**
    la función `core_course_get_contents` añadida.
 3. Servicios web → **Gestionar tokens**: generar un token para un usuario con
    acceso de lectura al curso, asociado a ese servicio externo → eso da
-   `MOODLE_TOKEN`.
+   `MOODLE_TOKEN`. **Importante en multi-curso**: ese usuario tiene que tener
+   acceso de lectura a TODOS los cursos que se vayan a asignar a algún alumno,
+   no solo a uno — si no, Moodle devolverá un error de permisos para los demás.
 4. Subir los materiales como ficheros `.gift` (cuestionarios) o `.txt` (repaso)
    en cualquier sección del curso (recurso tipo "Archivo") — son los únicos dos
    tipos que lista `moodle_client.list_course_files`.
 
-**Una vez tengas los 3 valores**, hay que ponerlos en dos sitios (no solo uno):
-- `backend/.env` en local (para probar con `uvicorn` antes de subir nada).
-- El panel de Render del servicio (Environment) para producción — Render no lee
-  el `.env` del repo para las variables que ya tiene definidas ahí (ver
-  `load_dotenv(override=not os.getenv("RENDER"))` en `main.py`), así que hace
-  falta darlas de alta también ahí para que el redeploy las recoja.
+**Estado real a 2026-09-16** (datos ya proporcionados por el cliente: sitio
+`https://perseverando.easytalk.info/education`, token
+`895e9c441d3a00a4c76492e08c2f3e08`, curso de ejemplo `id=2`):
 
-Sin necesidad de tocar ni una línea de código: en cuanto esas 3 variables estén
-puestas (y el backend se reinicie / redespliegue), la pestaña Ejercicios deja de
-dar 503 y empieza a listar lo que haya en el curso.
+1. ✅ Código implementado (backend + endpoint + panel de profesor).
+2. ✅ `MOODLE_URL`/`MOODLE_TOKEN` puestos en `backend/.env` **local**.
+3. ⬜ Falta darlos de alta también en el panel de Render del servicio
+   (Environment) — Render no lee el `.env` del repo para las variables que ya
+   tiene definidas ahí (ver `load_dotenv(override=not os.getenv("RENDER"))` en
+   `main.py`), así que sin este paso el redeploy no las recoge. `backend/.env`
+   se dejó **fuera a propósito** del commit de cierre de hoy (no reforzar el
+   problema ya conocido de secretos versionados, ver "Deuda / cosas a saber"),
+   así que este paso manual en Render sigue haciendo falta sí o sí.
+4. ✅ `sql/add_moodle_course_id.sql` ejecutado en el SQL Editor de Supabase
+   (confirmado en vivo: la columna `users.moodle_course_id` existe y
+   funciona en la Supabase real del cliente).
+5. ✅ `moodle_course_id=2` asignado al alumno `Hugo` desde el panel de
+   profesor — usado para todas las pruebas end-to-end de hoy. Falta
+   asignárselo también al resto de alumnos reales cuando corresponda.
+6. ✅ Commiteado y pusheado a ambos repos (`hugo967/profesor` /
+   `hugo967/tutor-ingles-backend`) en el cierre de la sesión de hoy.
 
 ## API REST (main.py)
 
@@ -237,9 +608,13 @@ dar 503 y empieza a listar lo que haya en el curso.
 - `GET/POST /api/exercises`, `POST /api/exercises/{id}/progress`, `GET /api/progress`
 - `POST /api/transcribe` (multipart: audio + context_label + last_tutor_message → Whisper;
   máx 8MB, idioma forzado a inglés, prompt de sesgo con el tema y lo último que dijo el tutor)
-- `GET /api/moodle/exercises`
-- `GET /api/teacher/summary` (tarjetas + actividad 7 días + tabla de alumnos)
+- `GET /api/moodle/exercises` (curso del alumno autenticado; 409 si no tiene
+  `moodle_course_id` asignado, 503 si falta `MOODLE_URL`/`MOODLE_TOKEN`)
+- `GET /api/teacher/summary` (tarjetas + actividad 7 días + tabla de alumnos,
+  incluye `moodle_course_id` de cada uno)
 - `POST /api/teacher/reset-password`
+- `POST /api/teacher/set-moodle-course` (asigna/quita el `moodle_course_id` de
+  un alumno; solo profesor — añadido 2026-09-16)
 - `GET /api/teacher/history/{student_id}`, `GET /api/teacher/exercises/{student_id}`
 
 ## Frontend `app.js` — puntos notables
@@ -410,8 +785,12 @@ backend.
 
 `GROQ_API_KEY`, `GROQ_MODEL`, `TTS_VOICE`, `TRANSCRIBE_MODEL`, `SUPABASE_URL`,
 `SUPABASE_SERVICE_KEY` (service_role, solo backend), `ALLOWED_ORIGINS`,
-`MOODLE_URL`, `MOODLE_TOKEN`, `MOODLE_COURSE_ID`. Opcionales de tuning:
-`GROQ_TIMEOUT_SECONDS`, `TTS_TIMEOUT_SECONDS`.
+`MOODLE_URL`, `MOODLE_TOKEN`. Opcionales de tuning: `GROQ_TIMEOUT_SECONDS`,
+`TTS_TIMEOUT_SECONDS`.
+
+`MOODLE_COURSE_ID` **ya no existe** como variable de entorno (2026-09-16): el
+curso de Moodle es ahora un dato por alumno (`users.moodle_course_id`), no
+global — ver "Integración Moodle" más arriba.
 
 ## Tests
 
@@ -430,7 +809,10 @@ requiere `profesor`/`1234` existente. `requirements-dev.txt`: pytest, httpx.
   (la *service_role*, con acceso total a la BD) en texto plano en el historial de
   commits. Pendiente de que el usuario decida: rotar ambas claves y sacar `.env`
   del repo (`git rm --cached backend/.env` + `.gitignore`), y valorar si hace
-  falta purgar el historial según la visibilidad del repo.
+  falta purgar el historial según la visibilidad del repo. El `.env` local de
+  trabajo (no commiteado, ver "Checklist para dejarla conectada") ya tiene
+  además `MOODLE_TOKEN` del cliente -- un motivo más para no seguir posponiendo
+  esta rotación/limpieza.
 
 ## Auditoría de bugs (2026-09-13)
 

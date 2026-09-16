@@ -80,6 +80,14 @@
       border-color: #e6c98a;
       box-shadow: 0 0 0 3px rgba(233, 196, 138, 0.35);
     }
+    /* Nivel/Modo bloqueados durante una práctica de Moodle (ver
+       updateConfigSelectsLock en app.js): no tiene sentido cambiarlos a
+       medias de una práctica, ya que su system prompt lo sustituye por
+       completo mientras dura (ver build_moodle_exercise_prompt). */
+    .config-bar select:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
     #level-test-btn, #help-btn, #new-chat-btn, #settings-btn, #logout-btn {
       font-family: inherit;
       font-size: 0.9rem;
