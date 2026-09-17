@@ -258,6 +258,18 @@ const helpModal = document.getElementById("help-modal");
 const helpCloseBtn = document.getElementById("help-close");
 const newChatBtn = document.getElementById("new-chat-btn");
 
+// Nivel elegido por el alumno: se recuerda entre "Nuevo Chat", cambios de
+// Contexto/Objetivo e incluso recargas de página, hasta que el propio
+// alumno vuelva a tocar el desplegable. Sin esto, cada acción que reenvía
+// "config" (Nuevo Chat, cambiar de contexto) no lo tocaba en memoria, pero
+// una recarga de la página sí lo perdía porque nada lo restauraba al cargar.
+const SAVED_LEVEL_KEY = "saved_level";
+const savedLevel = localStorage.getItem(SAVED_LEVEL_KEY) || "";
+if (savedLevel && levelSelect) {
+  levelSelect.value = savedLevel;
+  currentConfig.level = savedLevel;
+}
+
 // ============================================================
 // Avatar 3D (WebGL / Three.js — ver avatar3d.js)
 // ============================================================
@@ -808,6 +820,7 @@ function connect() {
       if (data.level) {
         currentConfig.level = data.level;
         if (levelSelect) levelSelect.value = data.level;
+        localStorage.setItem(SAVED_LEVEL_KEY, data.level);
       }
       // Toast flotante en vez de addSystem(): es un aviso menor y frecuente
       // (se dispara cada vez que se cambia nivel/contexto) que no debe
@@ -980,6 +993,11 @@ function configFeedback(level, context) {
 if (levelSelect) {
   levelSelect.addEventListener("change", () => {
     currentConfig.level = levelSelect.value;
+    if (currentConfig.level) {
+      localStorage.setItem(SAVED_LEVEL_KEY, currentConfig.level);
+    } else {
+      localStorage.removeItem(SAVED_LEVEL_KEY);
+    }
     sendConfig();
   });
 }
@@ -1082,6 +1100,7 @@ if (testSubmitBtn) {
     const level = levelFromScore(total);
     if (levelSelect) levelSelect.value = level;
     currentConfig.level = level;
+    localStorage.setItem(SAVED_LEVEL_KEY, level);
     sendConfig();
     closeLevelTest();
     addSystem(`Nivel sugerido: ${level}. Ajustado automáticamente.`);
