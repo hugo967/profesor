@@ -434,7 +434,14 @@
       position: relative;
       background: transparent;
       color: #f5f1e0;
-      padding: 18px 20px 8px;
+      /* clamp() en vez de px fijos: en una ventana de escritorio baja
+         (poca altura de viewport) este padding vertical se reduce solo,
+         dejando más hueco real para #chat (la "pizarra" de mensajes) en
+         vez de comerle espacio de forma fija sea cual sea la altura
+         disponible -- ver también .controls/#speak-btn más abajo, mismo
+         motivo. Nunca se aplica en móvil: la media query de <=768px
+         redefine este padding con un valor fijo propio. */
+      padding: clamp(8px, 2vh, 18px) 20px clamp(4px, 1vh, 8px);
       text-align: center;
     }
     #new-chat-btn {
@@ -644,14 +651,18 @@
     }
 
     .controls {
-      padding: 12px 16px 14px;
+      /* clamp(): mismo motivo que header más arriba -- en una ventana de
+         escritorio baja este bloque (input + botón de micro) se encoge un
+         poco en vez de mantener siempre su tamaño máximo a costa de #chat,
+         que es el que se ve "aplastado" cuando .controls no cede nada. */
+      padding: clamp(6px, 1.6vh, 12px) 16px clamp(8px, 1.8vh, 14px);
       background: linear-gradient(180deg, #a5713a, #8b5a2b 45%, #6e3f15);
       border-top: 3px solid #c98a4a;
       box-shadow: inset 0 4px 8px rgba(0, 0, 0, 0.3);
       display: flex;
       flex-direction: column;
       align-items: center;
-      gap: 8px;
+      gap: clamp(4px, 1vh, 8px);
     }
 
     .text-row {
@@ -663,7 +674,7 @@
     #text-input {
       flex: 1;
       min-width: 0;
-      padding: 9px 14px;
+      padding: clamp(6px, 1.2vh, 9px) 14px;
       font-family: inherit;
       font-size: 1.05rem;
       color: #33302a;
@@ -701,13 +712,16 @@
     }
 
     #speak-btn {
-      width: 76px;
-      height: 76px;
+      /* El elemento fijo más grande de .controls (antes 76px siempre):
+         clamp() lo deja encogerse hasta 52px en una ventana baja, la
+         mayor parte del hueco que se le devuelve a #chat. */
+      width: clamp(52px, 9vh, 76px);
+      height: clamp(52px, 9vh, 76px);
       border-radius: 50%;
       border: none;
       background: #f7f3e6;
       color: #4a5a3c;
-      font-size: 1.7rem;
+      font-size: clamp(1.2rem, 2.4vh, 1.7rem);
       cursor: pointer;
       box-shadow: 0 5px 14px rgba(0, 0, 0, 0.4), inset 0 -2px 4px rgba(0, 0, 0, 0.15);
       transition: transform 0.15s, background 0.15s;
@@ -720,7 +734,7 @@
       animation: pulse 1.2s infinite;
     }
 
-    #btn-label { font-size: 1rem; color: #f0e6cf; }
+    #btn-label { font-size: clamp(0.85rem, 1.8vh, 1rem); color: #f0e6cf; }
     .hint { font-size: 0.75rem; color: rgba(240, 230, 207, 0.6); }
 
     /* ============================================================
