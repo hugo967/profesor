@@ -369,6 +369,13 @@ function resize() {
   if (!renderer || !camera || !canvasEl) return;
   const { clientWidth, clientHeight } = canvasEl;
   if (!clientWidth || !clientHeight) return;
+  // En escritorio .app se escala entera con transform: scale() (ver el
+  // lienzo fijo en index.html), así que clientWidth es el tamaño de
+  // diseño y no el real en pantalla. Multiplicar el pixel ratio por esa
+  // escala visual mantiene el avatar nítido al ampliar y evita renderizar
+  // píxeles de más al reducir. En móvil no hay transform: escala = 1.
+  const visualScale = canvasEl.getBoundingClientRect().width / clientWidth || 1;
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2) * visualScale);
   renderer.setSize(clientWidth, clientHeight, false);
   camera.aspect = clientWidth / clientHeight;
   camera.updateProjectionMatrix();
@@ -869,6 +876,10 @@ export async function mountAvatar3D(canvas) {
 
   resizeObserver = new ResizeObserver(resize);
   resizeObserver.observe(canvas);
+  // El ResizeObserver no ve los cambios de transform: scale() del lienzo
+  // de escritorio (el tamaño de layout no cambia), así que también se
+  // escucha el resize de la ventana para recalcular el pixel ratio.
+  window.addEventListener("resize", resize);
   document.addEventListener("visibilitychange", handleVisibilityChange);
 
   renderLoop();
@@ -984,6 +995,7 @@ export function unmountAvatar3D() {
   rafHandle = null;
   if (resizeObserver) resizeObserver.disconnect();
   resizeObserver = null;
+  window.removeEventListener("resize", resize);
   document.removeEventListener("visibilitychange", handleVisibilityChange);
   if (mixer) {
     mixer.removeEventListener("finished", onGestureFinished);
