@@ -1,4 +1,5 @@
 // Tutor de Inglés MVP — lógica del frontend
+import { startVoiceMeter, isSilentClip } from "./voice-meter.js";
 
 // ---------- Configuración ----------
 // Sesión leída EXCLUSIVAMENTE de localStorage, rellenada por el login real
@@ -200,6 +201,16 @@ let recording = false;
 let startingRecording = false;
 let transcribing = false;
 let recordStopTimer = null;
+// Medidor de voz de la grabación en curso (ver voice-meter.js): si el clip
+// no tuvo voz, no se manda a Whisper (se inventaría texto sobre silencio).
+let voiceMeter = null;
+// Al pulsar 🛑 se sigue grabando este margen antes de cortar: el alumno
+// suele pulsar mientras aún termina la última palabra, que se perdía.
+const STOP_TAIL_MS = 350;
+// Si /api/transcribe falla por red o 5xx (p. ej. Render despertando), se
+// reintenta una vez con el mismo audio tras esta espera, antes de pasar al
+// reconocimiento del navegador (menos preciso) el resto de la sesión.
+const TRANSCRIBE_RETRY_DELAY_MS = 1500;
 // Si /api/transcribe falla, se marca y el micrófono pasa a usar la Web
 // Speech API del navegador el resto de la sesión.
 let serverTranscriptionDown = false;
@@ -1421,6 +1432,8 @@ async function startRecording() {
     recordedChunks = [];
     recording = false;
     const durationMs = Date.now() - recordingStartedAt;
+    const voice = voiceMeter ? voiceMeter.stop() : null;
+    voiceMeter = null;
     // Clip demasiado corto (toque accidental, o el alumno soltó antes de
     // decir nada): ni se manda a Whisper. Evita las alucinaciones típicas
     // sobre silencio/ruido ("Thank you.", "Subtitles by...") y se ahorra la
@@ -1430,10 +1443,19 @@ async function startRecording() {
       updateButton();
       return;
     }
+    // Grabación sin voz (micro silenciado, muy lejos, o el alumno no llegó
+    // a hablar): se avisa en vez de mandar silencio a Whisper.
+    if (isSilentClip(voice)) {
+      transcribing = false;
+      updateButton();
+      addSystem("🎤 No te he oído. Habla un poco más alto o más cerca del micrófono y vuelve a intentarlo.");
+      return;
+    }
     transcribeAndSend(blob);
   };
 
   mediaRecorder.start();
+  voiceMeter = startVoiceMeter(ensureAudioContext(), stream);
   recording = true;
   recordingStartedAt = Date.now();
   startingRecording = false;
@@ -1445,15 +1467,19 @@ async function startRecording() {
 
 function stopRecording() {
   clearTimeout(recordStopTimer);
-  if (!mediaRecorder || !recording) return;
-  // El envío ocurre en onstop; feedback inmediato mientras tanto.
+  if (!mediaRecorder || !recording || transcribing) return;
+  // El envío ocurre en onstop; feedback inmediato mientras tanto (el botón
+  // queda deshabilitado, así que no se puede pulsar dos veces).
   transcribing = true;
   updateButton();
-  try {
-    mediaRecorder.stop();
-  } catch (e) {
-    console.error("mediaRecorder.stop() falló:", e);
-  }
+  const recorder = mediaRecorder;
+  setTimeout(() => {
+    try {
+      recorder.stop();
+    } catch (e) {
+      console.error("mediaRecorder.stop() falló:", e);
+    }
+  }, STOP_TAIL_MS);
 }
 
 async function transcribeAndSend(blob) {
@@ -1472,12 +1498,25 @@ async function transcribeAndSend(blob) {
   }
   if (lastTutorMessage) form.append("last_tutor_message", lastTutorMessage);
 
-  try {
-    const res = await fetch(apiUrl("/api/transcribe"), {
+  const post = () =>
+    fetch(apiUrl("/api/transcribe"), {
       method: "POST",
       headers: { "X-User-Id": getCurrentUser() },
       body: form,
     });
+
+  try {
+    let res;
+    try {
+      res = await post();
+      if (res.status >= 500) throw new Error("HTTP " + res.status);
+    } catch (firstError) {
+      // Fallo de red o del servidor: un reintento con el mismo audio antes
+      // de rendirse (los 4xx no se reintentan: fallarían igual).
+      console.warn("Transcripción fallida, se reintenta una vez:", firstError);
+      await new Promise((r) => setTimeout(r, TRANSCRIBE_RETRY_DELAY_MS));
+      res = await post();
+    }
     if (!res.ok) throw new Error("HTTP " + res.status);
     const data = await res.json();
     const text = (data.text || "").trim();
