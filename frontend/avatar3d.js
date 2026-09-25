@@ -10,6 +10,12 @@
 // `V_Wide`). Verificado contra el .glb real (script Node parseando los
 // chunks del contenedor GLB).
 //
+// NOTA (2026-09-25): con PRESENTER_MODE (ver su bloque más abajo) el cuerpo
+// ya no usa ni Idle.fbx ni los talking*.fbx: pose de presentador (manos
+// juntas por delante, a la altura del ombligo) + respiración, calculadas
+// por código con IK. Lo que sigue describe el sistema de gestos de Mixamo,
+// que se conserva tras ese flag.
+//
 // El .glb TRAE una animación horneada de ~8 s (`avaturn_animation`) con
 // cuerpo Y cara (parpadeo, micro-miradas, cejas, respiración, balanceo de
 // brazos/dedos). Body: ya NO se usa como idle — se sustituyó por
@@ -202,6 +208,107 @@ const BEAT_SOFT_WINDOW_SECONDS = 0.7;    // cuánto dura el umbral corto tras cr
 const QUESTION_CROSSFADE_SECONDS = 0.75; // interrogación: crossfade un pelín más vivo que el normal, pero igual de suave (único proxy de "énfasis" sin gestos dedicados)
 const GESTURE_MIN_SWITCH_MS = 3500;      // no cambiar de gesto de hablar más seguido que esto -- deja que cada postura se vea de verdad antes de la siguiente
 
+// ---------- Modo presentador (2026-09-25, a petición del cliente) ----------
+// Pose sobria de presentador: manos juntas por DELANTE, a la altura del
+// ombligo, una sujetando suavemente a la otra; brazos caídos y relajados;
+// sin gestos de brazos; solo respiración y, de vez en cuando, un cambio muy
+// lento de qué mano queda por fuera. Historia: una primera versión con las
+// manos por delante deformaba muñecas/antebrazos, y la de manos por DETRÁS
+// de la espalda parecía "esposado" de frente. Con PRESENTER_MODE = true no
+// se descargan ni Idle.fbx ni talking1-3.fbx: el cuerpo lo mueve entero
+// updatePresenterBody() por código y la máquina de gestos de más abajo se
+// queda inerte. La cara (parpadeo/cejas/mirada del .glb) y el lip-sync
+// siguen igual. Poner a false recupera los gestos de Mixamo.
+//
+// Por qué se deformaba antes y cómo se evita ahora (IK anatómica, ver
+// solvePresenterArm):
+//   * El rig (Avaturn, T-pose con palmas abajo) NO tiene huesos de giro
+//     del antebrazo: Arm -> ForeArm -> Hand. Todo giro longitudinal del
+//     antebrazo retuerce la malla en el codo (si lo lleva ForeArm) o en la
+//     muñeca (si lo lleva Hand). En esa T-pose el antebrazo está en
+//     posición NEUTRA (pulgar hacia delante, pliegue del codo hacia
+//     delante), así que la pose se elige para pedir poca pronación, y la
+//     que pide se reparte entre codo y muñeca (FOREARM_TWIST_SHARE).
+//   * El codo es una bisagra: el brazo se orienta con base completa
+//     (dirección + eje de la bisagra) y el antebrazo SOLO gira sobre ese
+//     eje. Antes se apuntaban con rotación mínima y el giro que sobraba
+//     acababa retorciendo el codo ("codo rígido", antebrazo girado).
+//   * La mano no se orienta en espacio mundo: sale del antebrazo con
+//     ángulos de muñeca acotados (flexión y desviación de pocos grados).
+//   * Los dedos y el pulgar se flexionan en el marco de SU mano.
+//   * La IK se resuelve cada frame, después de la respiración: los
+//     hombros suben al inspirar y sin esto las manos se separarían.
+//
+// Posiciones en metros respecto al hueso Spine (~ombligo), ejes del modelo
+// (+Y arriba, +Z hacia la cámara); `x` es la separación hacia el lado de
+// ESA mano (negativo = cruza la línea media). Ángulos en grados.
+// El vientre/cinturón queda a ~0.135 m por delante de Spine (medido sobre
+// la malla): las muñecas van por delante de eso.
+const PRESENTER_MODE = true;
+const CLASP_REF_BONE = "Spine";
+const CLASP_POSE = {
+  // Mano de fuera: cruza la línea media y se apoya sobre la otra, palma
+  // hacia el cuerpo; dedos recogidos rodeándola, pulgar por debajo.
+  outer: { wrist: [0.02, 0.1, 0.2], pronation: 55, flex: 10, deviation: 5, curl: [25, 35, 22], thumb: [15, 20, 10] },
+  // Mano de dentro: casi de canto (poca pronación), relajada y medio
+  // cerrada bajo la de fuera.
+  inner: { wrist: [0.075, 0.075, 0.18], pronation: 15, flex: 15, deviation: 10, curl: [30, 40, 25], thumb: [10, 15, 10] },
+};
+// Pose intermedia del cambio de mano: las dos de canto, separadas y algo
+// adelantadas (en el punto medio solo se rozan las yemas): así una no
+// atraviesa a la otra al pasar por encima.
+// Solo cuando la mano de fuera es la IZQUIERDA del personaje: su muñeca
+// se abre este tanto (m) hacia su lado para que no entre tan cruzada
+// (petición del cliente; con la derecha encima se deja igual).
+const CLASP_OUTER_LEFT_EXTRA_X = 0.015;
+const CLASP_OUTER_LEFT = { ...CLASP_POSE.outer, wrist: [CLASP_POSE.outer.wrist[0] + CLASP_OUTER_LEFT_EXTRA_X, ...CLASP_POSE.outer.wrist.slice(1)] };
+const CLASP_SWAP_MID = { wrist: [0.13, 0.1, 0.23], pronation: 25, flex: 0, deviation: 0, curl: [15, 20, 12], thumb: [5, 10, 8] };
+// Hacia dónde abre el codo (fuera y atrás, algo abajo), lado izquierdo; X
+// se refleja. Codos pegados al costado y algo por detrás: brazos caídos,
+// no "ofreciendo" las manos. (Se probó [0.4, -0.2, -1] con las manos más
+// adelantadas y el cliente lo vio peor: se descartó.)
+const CLASP_ELBOW_POLE = [1, -0.2, -0.9];
+// Parte de la pronación que lleva el antebrazo (se retuerce el codo); el
+// resto la lleva la mano (se retuerce la muñeca). Repartida, ninguna de las
+// dos articulaciones pasa de ~28° de giro.
+const FOREARM_TWIST_SHARE = 0.5;
+// Clavículas algo caídas y adelantadas: quita el aire "encogido" que deja
+// bajar los brazos desde una T-pose.
+const SHOULDER_DROP_DEG = 4;
+const SHOULDER_FORWARD_DEG = 3;
+const HAND_SWAP_MIN_SECONDS = 18;        // cada cuánto cambia la mano de fuera (al azar en el rango)
+const HAND_SWAP_MAX_SECONDS = 32;
+const HAND_SWAP_DURATION_SECONDS = 2.6;  // muy lento: se lee como un reajuste, no como un gesto
+// Respiración: ~13 respiraciones/min, amplitudes de pocos grados
+// (tercera calibración, 2026-09-25: con 1.2°/2.0° el cliente pidió que se
+// notara un poco más).
+const BREATH_PERIOD_SECONDS = 4.6;
+const BREATH_CHEST_DEG = 2.0;            // Spine1/Spine2 se abren un poco hacia atrás
+const BREATH_SHOULDER_DEG = 3.0;         // los hombros suben al inspirar
+const BREATH_NECK_COMPENSATION = 0.8;    // el cuello deshace casi todo: la cabeza no cabecea
+const BREATH_HANDS_LIFT = 0.006;         // metros: las manos suben un pelo al inspirar (quietas del todo parecen clavadas)
+// Cabeza en reposo: mientras NO habla, cada HEAD_IDLE_MIN..MAX s gira un
+// poco la cabeza hacia un lado (con una leve inclinación hacia ese mismo
+// lado), la mantiene HEAD_HOLD_MIN..MAX s y vuelve al frente. Al empezar a
+// hablar vuelve al frente. El movimiento es un muelle críticamente
+// amortiguado (arranca y frena suave, sin rebote); HEAD_SPRING_OMEGA marca
+// la rapidez (~1.3 s en llegar).
+const HEAD_IDLE_MIN_SECONDS = 4;
+const HEAD_IDLE_MAX_SECONDS = 9;
+const HEAD_HOLD_MIN_SECONDS = 1.5;
+const HEAD_HOLD_MAX_SECONDS = 3.5;
+const HEAD_TURN_MIN_DEG = 7;
+const HEAD_TURN_MAX_DEG = 13;
+const HEAD_TILT_MAX_DEG = 3;
+const HEAD_NOD_MAX_DEG = 2;              // un pelín arriba/abajo al azar, para que no sea siempre el mismo giro
+const HEAD_SPRING_OMEGA = 3.5;
+const HEAD_TRAVEL_SECONDS = 1.2;         // lo que tarda el giro en asentarse: la pausa cuenta desde ahí
+const HEAD_AFTER_TALK_SECONDS = 3;       // tras hablar, espera al menos esto antes de mirar a un lado
+// Las manos quedan por debajo del corte normal (ombligo): el plano baja lo
+// justo para que se vean enteras.
+const FRAME_INCLUDE_HANDS = true;
+const FRAME_HANDS_MARGIN = 0.04;
+
 // idle y los 3 talking son "compañeros" del mismo
 // canal de cuerpo: en todo momento hay como mucho UNO entrando (fadeIn) y
 // UNO saliendo (fadeOut), con la MISMA duración y arrancados en el mismo
@@ -245,6 +352,9 @@ let actionFace = null;
 let currentBodyAction = null;
 let currentGestureState = "idle"; // "idle" | "talking" | "talking_pause"
 let isTalking = false;
+// Modo presentador (ver PRESENTER_MODE): huesos, poses precalculadas y
+// estado del cambio de mano. null si no está activo o el rig no cuadra.
+let presenter = null;
 
 // Sincronía de cuerpo con el habla (ver bloque de constantes de arriba).
 // runningSeconds: reloj propio del módulo (suma de los dt del render loop),
@@ -338,7 +448,16 @@ function frameCameraOnBust(root) {
   const bottomPos = wp(bottom);
 
   const frameTopY = topPos.y + FRAME_HAIR_MARGIN + FRAME_TOP_AIR; // borde superior deseado
-  const bottomY = bottomPos.y + FRAME_BOTTOM_LIFT;                // borde inferior deseado
+  let bottomY = bottomPos.y + FRAME_BOTTOM_LIFT;                  // borde inferior deseado
+  // Modo presentador: las manos entrelazadas quedan por debajo del ombligo
+  // y deben verse -- el corte baja hasta la punta de dedo más baja.
+  if (presenter && FRAME_INCLUDE_HANDS) {
+    // Las falanges distales son el último hueso de cada dedo: la yema queda
+    // ~2.5 cm más allá, de ahí el margen.
+    const handBones = ["Hand", "HandIndex3", "HandMiddle3", "HandRing3", "HandPinky3", "HandThumb3"]
+      .flatMap((n) => [findBone(root, `Left${n}`), findBone(root, `Right${n}`)]).filter(Boolean);
+    for (const b of handBones) bottomY = Math.min(bottomY, wp(b).y - FRAME_HANDS_MARGIN);
+  }
   const visibleHeight = frameTopY - bottomY;
   const halfWidth = Math.max(...widthBones.map((b) => Math.abs(wp(b).x))) + FRAME_WIDTH_MARGIN;
 
@@ -744,12 +863,300 @@ function updateBodySpeechSync(speaking, dt) {
   }
 }
 
+// ---------- Modo presentador: pose, respiración y cambio de mano ----------
+const _v3 = (a) => new THREE.Vector3(a[0], a[1], a[2]);
+const worldPos = (obj) => obj.getWorldPosition(new THREE.Vector3());
+const worldQuat = (obj) => obj.getWorldQuaternion(new THREE.Quaternion());
+const deg = THREE.MathUtils.degToRad;
+const axisAngle = (axis, rad) => new THREE.Quaternion().setFromAxisAngle(axis, rad);
+
+// Gira `bone` una rotación dada en espacio MUNDO (qWorld) y refresca las
+// matrices de su subárbol, para que el siguiente paso lea posiciones ya
+// actualizadas.
+function rotateBoneWorld(bone, qWorld) {
+  const parentInv = worldQuat(bone.parent).invert();
+  bone.quaternion.copy(parentInv.multiply(qWorld.clone().multiply(worldQuat(bone))));
+  bone.updateMatrixWorld(true);
+}
+
+// Base ortonormal (eje principal, eje secundario) -> cuaternión.
+function basisQuat(main, second) {
+  const a = main.clone().normalize();
+  const b = second.clone().sub(a.clone().multiplyScalar(second.dot(a))).normalize();
+  const c = new THREE.Vector3().crossVectors(a, b);
+  return new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(a, b, c));
+}
+
+// Marco actual de una mano, medido sobre los huesos de los dedos (no sobre
+// sus ejes locales, que cambian de un lado a otro): dedos, lado del pulgar
+// y normal de la palma.
+function handFrame(arm) {
+  const h = worldPos(arm.hand);
+  const fingers = worldPos(arm.middle).sub(h).normalize();
+  const thumbSide = worldPos(arm.index).sub(worldPos(arm.pinky));
+  thumbSide.sub(fingers.clone().multiplyScalar(thumbSide.dot(fingers))).normalize();
+  // En la T-pose (palmas abajo, pulgar hacia delante) fingers x thumbSide
+  // apunta abajo en la izquierda y arriba en la derecha; la palma mira
+  // abajo en las dos.
+  const palm = new THREE.Vector3().crossVectors(fingers, thumbSide).multiplyScalar(arm.side);
+  return { fingers, thumbSide, palm };
+}
+
+// Coloca un brazo según `pose` (ver CLASP_POSE), partiendo de la pose de
+// bind de sus huesos y con el tronco/hombros como estén ESTE frame. `lift`:
+// metros extra de altura de la muñeca (la respiración).
+function solvePresenterArm(arm, ref, pose, lift = 0) {
+  const { upper, fore, hand, side } = arm;
+  arm.bones.forEach((b, i) => b.quaternion.copy(arm.rest[i]));
+  upper.updateMatrixWorld(true);
+
+  // Objetivo de la muñeca en el marco del hueso de referencia (Spine): va
+  // con el cuerpo, no con los hombros (que suben y bajan al respirar).
+  const wrist = ref.localToWorld(arm.refLocal(pose.wrist, lift));
+
+  // 1) Codo: IK analítica de dos huesos con vector polar.
+  const S = worldPos(upper);
+  const a = arm.lenUpper;
+  const b = arm.lenFore;
+  const toW = wrist.clone().sub(S);
+  const d = THREE.MathUtils.clamp(toW.length(), Math.abs(a - b) + 1e-3, a + b - 1e-3);
+  const u = toW.normalize();
+  const cosA = (a * a + d * d - b * b) / (2 * a * d);
+  const pole = arm.pole.clone();
+  pole.sub(u.clone().multiplyScalar(pole.dot(u))).normalize();
+  const E = S.clone().add(u.clone().multiplyScalar(a * cosA)).add(pole.multiplyScalar(a * Math.sqrt(Math.max(1 - cosA * cosA, 0))));
+  const W = S.clone().add(u.clone().multiplyScalar(d));
+
+  // 2) Brazo: base completa (dirección + eje de la bisagra del codo), no
+  // rotación mínima -- así el codo flexiona sobre su eje real.
+  const upperDir = E.clone().sub(S).normalize();
+  const foreDir = W.clone().sub(E).normalize();
+  const hinge = new THREE.Vector3().crossVectors(upperDir, foreDir).normalize();
+  const bindDir = worldPos(fore).sub(S).normalize();
+  // En bind el codo flexiona hacia delante (+Z): su eje es bindDir x Z.
+  const bindHinge = new THREE.Vector3().crossVectors(bindDir, new THREE.Vector3(0, 0, 1)).normalize();
+  rotateBoneWorld(upper, basisQuat(upperDir, hinge).multiply(basisQuat(bindDir, bindHinge).invert()));
+
+  // 3) Antebrazo: solo bisagra (el eje de la rotación mínima es `hinge`).
+  const curFore = worldPos(hand).sub(worldPos(fore)).normalize();
+  rotateBoneWorld(fore, new THREE.Quaternion().setFromUnitVectors(curFore, foreDir));
+
+  // 4) Pronación repartida entre antebrazo y mano (positiva = palma hacia
+  // abajo/atrás, en ambos lados). La mano hereda el giro del antebrazo y
+  // se le añade el resto: en mundo acaba igual, pero ninguna articulación
+  // se retuerce del todo.
+  const pron = deg(pose.pronation) * side;
+  rotateBoneWorld(fore, axisAngle(foreDir, pron * FOREARM_TWIST_SHARE));
+  rotateBoneWorld(hand, axisAngle(foreDir, pron * (1 - FOREARM_TWIST_SHARE)));
+
+  // 5) Muñeca: flexión (dedos hacia la palma) y desviación cubital (hacia
+  // el meñique), pocos grados.
+  let f = handFrame(arm);
+  rotateBoneWorld(hand, axisAngle(new THREE.Vector3().crossVectors(f.fingers, f.palm).normalize(), deg(pose.flex)));
+  f = handFrame(arm);
+  rotateBoneWorld(hand, axisAngle(new THREE.Vector3().crossVectors(f.fingers, f.thumbSide.clone().negate()).normalize(), deg(pose.deviation)));
+
+  // 6) Dedos (4 largos) y pulgar, flexionados hacia la palma en el marco
+  // de esta mano. Su giro LOCAL no depende de dónde esté la mano, así que
+  // solo se recalcula si cambia la flexión (durante el cambio de mano).
+  const curlKey = `${pose.curl}|${pose.thumb}`;
+  if (curlKey === arm.curlKey) return;
+  arm.curlKey = curlKey;
+  arm.digits.forEach((b, i) => b.quaternion.copy(arm.restDigits[i]));
+  hand.updateMatrixWorld(true);
+  f = handFrame(arm);
+  for (const chain of arm.fingers) {
+    chain.forEach((bone, i) => {
+      const next = chain[i + 1];
+      const dir = next ? worldPos(next).sub(worldPos(bone)) : worldPos(bone).sub(worldPos(bone.parent));
+      const axis = new THREE.Vector3().crossVectors(dir.normalize(), f.palm).normalize();
+      rotateBoneWorld(bone, axisAngle(axis, deg(pose.curl[Math.min(i, pose.curl.length - 1)])));
+    });
+  }
+  arm.thumb.forEach((bone, i) => {
+    const next = arm.thumb[i + 1];
+    const dir = next ? worldPos(next).sub(worldPos(bone)) : worldPos(bone).sub(worldPos(bone.parent));
+    const axis = new THREE.Vector3().crossVectors(dir.normalize(), f.palm).normalize();
+    rotateBoneWorld(bone, axisAngle(axis, deg(pose.thumb[Math.min(i, pose.thumb.length - 1)])));
+  });
+}
+
+function collectArm(root, side, ref) {
+  const prefix = side === 1 ? "Left" : "Right";
+  const bone = (n) => findBone(root, `${prefix}${n}`);
+  const chain = (f) => [1, 2, 3].map((i) => bone(`Hand${f}${i}`)).filter(Boolean);
+  const arm = {
+    side,
+    upper: bone("Arm"), fore: bone("ForeArm"), hand: bone("Hand"),
+    index: bone("HandIndex1"), middle: bone("HandMiddle1"), pinky: bone("HandPinky1"),
+    fingers: ["Index", "Middle", "Ring", "Pinky"].map(chain),
+    thumb: chain("Thumb"),
+  };
+  if (!arm.upper || !arm.fore || !arm.hand || !arm.index || !arm.middle || !arm.pinky) return null;
+  arm.bones = [arm.upper, arm.fore, arm.hand];
+  arm.rest = arm.bones.map((b) => b.quaternion.clone());
+  arm.digits = [...arm.fingers.flat(), ...arm.thumb];
+  arm.restDigits = arm.digits.map((b) => b.quaternion.clone());
+  arm.curlKey = null;
+  arm.lenUpper = worldPos(arm.fore).distanceTo(worldPos(arm.upper));
+  arm.lenFore = worldPos(arm.hand).distanceTo(worldPos(arm.fore));
+  arm.pole = _v3(CLASP_ELBOW_POLE).setX(CLASP_ELBOW_POLE[0] * side).normalize();
+  // pose.wrist (x hacia el lado de esta mano) -> punto en el espacio local
+  // de `ref`. Se mide en ejes del modelo y se pasa a local de ref con su
+  // orientación en bind, para que la respiración lo arrastre.
+  const refInv = worldQuat(ref).invert();
+  const refScale = ref.getWorldScale(new THREE.Vector3());
+  arm.refLocal = (w, lift) => new THREE.Vector3(w[0] * side, w[1] + lift, w[2]).applyQuaternion(refInv).divide(refScale);
+  return arm;
+}
+
+// Prepara huesos, poses y respiración. Devuelve null si al rig le falta
+// algún hueso necesario.
+function buildPresenter(root) {
+  const ref = findBone(root, CLASP_REF_BONE);
+  root.updateMatrixWorld(true);
+  const left = ref && collectArm(root, 1, ref);
+  const right = ref && collectArm(root, -1, ref);
+  if (!left || !right) return null;
+
+  // Respiración + caída de hombros: eje en espacio MUNDO pasado a local de
+  // cada hueso (en bind), para aplicarlo cada frame sin recalcular matrices.
+  const breath = [];
+  const addBone = (name, parts) => {
+    const b = findBone(root, name);
+    if (!b) return;
+    const inv = worldQuat(b).invert();
+    const local = (w) => w.clone().applyQuaternion(inv).normalize();
+    breath.push({ bone: b, rest: b.quaternion.clone(), parts: parts.map(([axis, fixedDeg, breathDeg]) => ({ axis: local(axis), fixed: deg(fixedDeg), breath: deg(breathDeg) })) });
+  };
+  const X = new THREE.Vector3(1, 0, 0);
+  const Y = new THREE.Vector3(0, 1, 0);
+  const Z = new THREE.Vector3(0, 0, 1);
+  // Giro positivo en +X inclina hacia delante: pecho hacia atrás = negativo.
+  addBone("Spine1", [[X, 0, -BREATH_CHEST_DEG * 0.5]]);
+  addBone("Spine2", [[X, 0, -BREATH_CHEST_DEG * 0.5]]);
+  addBone("Neck", [[X, 0, BREATH_CHEST_DEG * BREATH_NECK_COMPENSATION]]);
+  // Hombro izquierdo (+X) sube girando en +Z y va hacia delante girando en
+  // -Y; el derecho, al revés.
+  addBone("LeftShoulder", [[Z, -SHOULDER_DROP_DEG, BREATH_SHOULDER_DEG], [Y, -SHOULDER_FORWARD_DEG, 0]]);
+  addBone("RightShoulder", [[Z, SHOULDER_DROP_DEG, -BREATH_SHOULDER_DEG], [Y, SHOULDER_FORWARD_DEG, 0]]);
+
+  // Cabeza: mismos ejes mundo -> local, aplicados cada frame sobre su pose
+  // de reposo (ver updatePresenterHead).
+  const headBone = findBone(root, "Head");
+  let head = null;
+  if (headBone) {
+    const inv = worldQuat(headBone).invert();
+    const local = (w) => w.clone().applyQuaternion(inv).normalize();
+    head = {
+      bone: headBone, rest: headBone.quaternion.clone(), axes: { yaw: local(Y), pitch: local(X), roll: local(Z) },
+      pos: { yaw: 0, pitch: 0, roll: 0 }, vel: { yaw: 0, pitch: 0, roll: 0 }, target: { yaw: 0, pitch: 0, roll: 0 },
+      looking: false, nextAt: randomBetween(HEAD_IDLE_MIN_SECONDS, HEAD_IDLE_MAX_SECONDS),
+    };
+  }
+
+  const top = Math.random() < 0.5 ? 1 : -1;
+  return {
+    ref, arms: [left, right], breath, head,
+    top,              // lado de la mano de fuera ahora (o hacia la que se va): 1 izquierda, -1 derecha
+    from: top,        // mano de fuera al empezar el cambio en curso
+    swapT: 1,         // progreso del cambio (1 = quieto)
+    nextSwapAt: randomSwapDelay(),
+  };
+}
+
+const randomBetween = (min, max) => min + Math.random() * (max - min);
+
+const _qHead = new THREE.Quaternion();
+
+// Por frame: giro de cabeza en reposo (ver HEAD_IDLE_*).
+function updatePresenterHead(h, dt) {
+  const t = h.target;
+  if (isTalking) {
+    // Hablando: de frente. Al terminar, espera un poco antes de mirar a
+    // otro lado (que no lo haga justo al acabar la frase).
+    t.yaw = t.pitch = t.roll = 0;
+    h.looking = false;
+    h.nextAt = Math.max(h.nextAt, HEAD_AFTER_TALK_SECONDS);
+  } else if ((h.nextAt -= dt) <= 0) {
+    if (h.looking) {
+      t.yaw = t.pitch = t.roll = 0;
+      h.nextAt = randomBetween(HEAD_IDLE_MIN_SECONDS, HEAD_IDLE_MAX_SECONDS);
+    } else {
+      const side = Math.random() < 0.5 ? 1 : -1;
+      t.yaw = deg(randomBetween(HEAD_TURN_MIN_DEG, HEAD_TURN_MAX_DEG)) * side;
+      t.roll = deg(randomBetween(0.3, 1) * HEAD_TILT_MAX_DEG) * -side;
+      t.pitch = deg(randomBetween(-1, 1) * HEAD_NOD_MAX_DEG);
+      h.nextAt = HEAD_TRAVEL_SECONDS + randomBetween(HEAD_HOLD_MIN_SECONDS, HEAD_HOLD_MAX_SECONDS);
+    }
+    h.looking = !h.looking;
+  }
+  const w = HEAD_SPRING_OMEGA;
+  h.bone.quaternion.copy(h.rest);
+  for (const k of ["yaw", "pitch", "roll"]) {
+    h.vel[k] += (w * w * (t[k] - h.pos[k]) - 2 * w * h.vel[k]) * dt;
+    h.pos[k] += h.vel[k] * dt;
+    h.bone.quaternion.multiply(_qHead.setFromAxisAngle(h.axes[k], h.pos[k]));
+  }
+}
+
+function randomSwapDelay() {
+  return HAND_SWAP_MIN_SECONDS + Math.random() * (HAND_SWAP_MAX_SECONDS - HAND_SWAP_MIN_SECONDS);
+}
+
+// Interpolación lineal de dos poses de mano (todos sus campos numéricos).
+function lerpPose(a, b, t) {
+  const mix = (x, y) => (Array.isArray(x) ? x.map((v, i) => v + (y[i] - v) * t) : x + (y - x) * t);
+  return Object.fromEntries(Object.keys(a).map((k) => [k, mix(a[k], b[k])]));
+}
+
+const _qBreath = new THREE.Quaternion();
+
+// Por frame: respiración, luego las dos manos por IK (con el cambio de mano
+// si toca).
+function updatePresenterBody(dt) {
+  const p = presenter;
+  if (!p) return;
+
+  p.nextSwapAt -= dt;
+  if (p.swapT >= 1 && p.nextSwapAt <= 0) {
+    p.from = p.top;
+    p.top = -p.top;
+    p.swapT = 0;
+    p.nextSwapAt = randomSwapDelay();
+  }
+  if (p.swapT < 1) p.swapT = Math.min(1, p.swapT + dt / HAND_SWAP_DURATION_SECONDS);
+
+  // Respiración: 0..1, inspiración algo más corta que la espiración.
+  const phase = (runningSeconds % BREATH_PERIOD_SECONDS) / BREATH_PERIOD_SECONDS;
+  const breath = Math.pow(0.5 - 0.5 * Math.cos(2 * Math.PI * phase), 1.3);
+  for (const b of p.breath) {
+    b.bone.quaternion.copy(b.rest);
+    for (const part of b.parts) b.bone.quaternion.multiply(_qBreath.setFromAxisAngle(part.axis, part.fixed + part.breath * breath));
+  }
+  if (p.head) updatePresenterHead(p.head, dt);
+  p.ref.parent.updateMatrixWorld(true);
+
+  // Cambio de mano: curva cuadrática A -> mid -> B (de Casteljau sobre los
+  // parámetros de la pose): pasa CERCA de la pose intermedia sin detenerse,
+  // un único movimiento continuo; smoothstep para arrancar y parar suave.
+  const t = p.swapT * p.swapT * (3 - 2 * p.swapT);
+  const role = (side, top) => (side !== top ? CLASP_POSE.inner : side === 1 ? CLASP_OUTER_LEFT : CLASP_POSE.outer);
+  for (const arm of p.arms) {
+    const A = role(arm.side, p.from);
+    const B = role(arm.side, p.top);
+    const pose = A === B ? A : lerpPose(lerpPose(A, CLASP_SWAP_MID, t), lerpPose(CLASP_SWAP_MID, B, t), t);
+    solvePresenterArm(arm, p.ref, pose, BREATH_HANDS_LIFT * breath);
+  }
+}
+
 function renderLoop() {
   rafHandle = requestAnimationFrame(renderLoop);
   // dt acotado: al volver de una pestaña oculta el primer delta es enorme.
   const dt = Math.min(clock.getDelta(), 0.1);
   runningSeconds += dt;
   if (mixer) mixer.update(dt);
+  updatePresenterBody(dt);
   const speaking = updateMouth();
   updateBodySpeechSync(speaking, dt);
   renderer.render(scene, camera);
@@ -801,7 +1208,7 @@ export async function mountAvatar3D(canvas) {
   const fbxLoader = new FBXLoader();
   const [gltf, idleClip] = await Promise.all([
     loader.loadAsync(MODEL_URL),
-    loadMixamoClip(fbxLoader, GESTURE_IDLE_URL),
+    PRESENTER_MODE ? Promise.resolve(null) : loadMixamoClip(fbxLoader, GESTURE_IDLE_URL),
   ]);
   const root = gltf.scene;
   scene.add(root);
@@ -820,7 +1227,27 @@ export async function mountAvatar3D(canvas) {
 
   const hasBakedAnimation = !!(gltf.animations && gltf.animations.length);
 
-  if (idleClip || hasBakedAnimation) {
+  // Modo presentador: el cuerpo entero es procedural (updatePresenterBody);
+  // del .glb solo se reproduce la cara. Si al rig le faltara algún hueso,
+  // se cae al sistema de gestos de Mixamo de siempre.
+  presenter = PRESENTER_MODE ? buildPresenter(root) : null;
+  if (PRESENTER_MODE && !presenter) {
+    console.warn("avatar3d: el rig no tiene los huesos del modo presentador; se usa la idle horneada del .glb");
+  }
+
+  if (presenter) {
+    if (hasBakedAnimation) {
+      const faceClip = gltf.animations[0].clone();
+      faceClip.tracks = faceClip.tracks.filter((t) => t.name.endsWith(".morphTargetInfluences"));
+      if (faceClip.tracks.length) {
+        mixer = new THREE.AnimationMixer(root);
+        actionFace = mixer.clipAction(faceClip);
+        actionFace.play();
+        mixer.update(0);
+      }
+    }
+    updatePresenterBody(0); // pose aplicada antes de encuadrar
+  } else if (idleClip || hasBakedAnimation) {
     mixer = new THREE.AnimationMixer(root);
 
     if (idleClip) {
@@ -891,7 +1318,7 @@ export async function mountAvatar3D(canvas) {
     mouthTargetsFound: Object.fromEntries(
       MOUTH_SHAPES.map((n) => [n, mouthGroups[n].length])
     ),
-    hasIdleAnimation: !!mixer,
+    hasIdleAnimation: !!mixer || !!presenter,
   };
 }
 
@@ -987,7 +1414,17 @@ export function getSpeechSyncDebugState() {
     paused: pauseTracker.paused,
     beatsTotal: speechBeats.length,
     beatsFired: speechBeatIndex,
+    handOnTop: presenter ? (presenter.top === 1 ? "Left" : "Right") : null,
+    handSwapProgress: presenter ? presenter.swapT : null,
+    seconds: runningSeconds,
   };
+}
+
+// Solo para pruebas (avatar3d-preview.html): fuerza ya el cambio de mano
+// de encima en vez de esperar al temporizador. Sin efecto fuera del modo
+// presentador o si hay un cambio en curso.
+export function forcePresenterHandSwap() {
+  if (presenter && presenter.swapT >= 1) presenter.nextSwapAt = 0;
 }
 
 export function unmountAvatar3D() {
@@ -1008,6 +1445,7 @@ export function unmountAvatar3D() {
   currentBodyAction = null;
   currentGestureState = "idle";
   isTalking = false;
+  presenter = null;
   runningSeconds = 0;
   lastGestureSwitchAt = -Infinity;
   pausedFromAction = null;

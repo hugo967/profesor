@@ -68,6 +68,7 @@
       <span id="volval">0.00</span>
       <button id="talk">▶︎ Hablar (auto)</button>
       <button id="stop">■</button>
+      <button id="swapHands">🤝 Cambiar mano de encima</button>
     </div>
     <div id="log">cargando…</div>
     <div class="row"><strong>Gestos (cuerpo)</strong> — cada línea es un cambio de gesture state; en rojo, dos cambios a menos de 250ms (posible "tirón" a vigilar)</div>
@@ -84,6 +85,9 @@
       const info = await mod.mountAvatar3D(canvas);
       Avatar3D = mod;
       log("montado ✓  " + JSON.stringify(info));
+      // ?swap=<ms>: fuerza un cambio de mano a los <ms> (para capturas headless).
+      const swapMs = +new URLSearchParams(location.search).get("swap");
+      if (swapMs) setTimeout(() => mod.forcePresenterHandSwap(), swapMs);
     } catch (err) {
       log("ERROR al montar: " + (err?.message || err));
       console.error(err);
@@ -193,6 +197,9 @@
         talkRaf = requestAnimationFrame(tick);
       };
       tick();
+    });
+    document.getElementById("swapHands").addEventListener("click", () => {
+      if (Avatar3D && Avatar3D.forcePresenterHandSwap) Avatar3D.forcePresenterHandSwap();
     });
     document.getElementById("stop").addEventListener("click", () => {
       if (talkRaf) cancelAnimationFrame(talkRaf);
