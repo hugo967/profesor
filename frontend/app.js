@@ -8,6 +8,10 @@ import { startVoiceMeter, isSilentClip } from "./voice-meter.js";
 // se muestra siempre la pantalla de login.
 let username = localStorage.getItem('username') || '';
 let roleParam = (localStorage.getItem('role_param') || '').toLowerCase();
+// Token de sesión (JWT) emitido por /api/auth/login. Es lo ÚNICO que
+// autentica ante el backend: viaja en Authorization: Bearer en cada fetch y
+// como ?token= en el WebSocket. Sin él, no hay acceso (ya no vale el username).
+let accessToken = localStorage.getItem('access_token') || '';
 
 // El rol de profesor viene del backend (Supabase) en el momento del login
 // real, nunca se infiere del nombre de usuario.
@@ -58,7 +62,7 @@ window.apiUrl = apiUrl;
 
 const wsProtocol = API_BASE_URL.startsWith("https:") ? "wss:" : "ws:";
 const wsHost = API_BASE_URL.replace(/^https?:\/\//, "");
-const WS_URL = username ? `${wsProtocol}//${wsHost}/ws/chat?username=${encodeURIComponent(username)}` : `${wsProtocol}//${wsHost}/ws/chat`;
+const WS_URL = accessToken ? `${wsProtocol}//${wsHost}/ws/chat?token=${encodeURIComponent(accessToken)}` : `${wsProtocol}//${wsHost}/ws/chat`;
 
 // ============================================================
 // Login por usuario y contraseña (sin autorregistro)
@@ -106,6 +110,9 @@ function completeLogin(data) {
   localStorage.setItem("username", data.username);
   localStorage.setItem("user_id", data.user_id);
   localStorage.setItem("role_param", data.role === "teacher" ? "teacher" : "");
+  // El token es lo que autentica cada petición posterior; sin él la app
+  // recargaría a un estado "con sesión" que el backend rechazaría con 401.
+  localStorage.setItem("access_token", data.access_token || "");
   // Recarga para que todo el módulo (WS_URL, isTeacher, etc., que son
   // const calculadas una sola vez arriba) se reevalúe desde cero ya con la
   // sesión guardada.
@@ -149,6 +156,7 @@ function logout() {
   localStorage.removeItem("username");
   localStorage.removeItem("user_id");
   localStorage.removeItem("role_param");
+  localStorage.removeItem("access_token");
   // Si había una pestaña del modal abierta (#progreso, #retos, ...), se
   // limpia el hash sin tocar el pathname antes de recargar. Así la
   // recarga siempre respeta la subruta actual del sitio (p. ej.
@@ -1501,7 +1509,7 @@ async function transcribeAndSend(blob) {
   const post = () =>
     fetch(apiUrl("/api/transcribe"), {
       method: "POST",
-      headers: { "X-User-Id": getCurrentUser() },
+      headers: { "Authorization": "Bearer " + getToken() },
       body: form,
     });
 
@@ -1608,6 +1616,24 @@ function getCurrentUser() {
   return localStorage.getItem('user_id') || username || localStorage.getItem('username') || "";
 }
 
+// Token de sesión para autenticar cada petición al backend (Authorization:
+// Bearer). Se relee de localStorage por si cambió (login/logout en otra pestaña).
+function getToken() {
+  return accessToken || localStorage.getItem('access_token') || "";
+}
+
+// Si el backend responde 401 (token ausente/caducado/inválido) cerramos la
+// sesión y volvemos al login, en vez de dejar la UI en un estado zombi que
+// falla en silencio. Se llama desde los catch/checks de las llamadas fetch.
+function handleAuthExpiry(res) {
+  if (res && res.status === 401) {
+    logout();
+    return true;
+  }
+  return false;
+}
+window.handleAuthExpiry = handleAuthExpiry;
+
 function updateTeacherTabVisibility() {
   const teacherTabBtn = document.querySelector('.tab-btn[data-tab="tab-profesor"]');
   if (teacherTabBtn) teacherTabBtn.classList.toggle("hidden", !isTeacher);
@@ -1629,7 +1655,7 @@ async function loadChatHistory() {
 
   try {
     const res = await fetch(apiUrl("/api/history"), {
-      headers: { "X-User-Id": current_user }
+      headers: { "Authorization": "Bearer " + getToken() }
     });
     const sessions = await res.json();
 
@@ -1743,7 +1769,7 @@ function startExercise(ex) {
   const current_user = getCurrentUser();
   fetch(apiUrl(`/api/exercises/${ex.id}/progress`), {
     method: "POST",
-    headers: { "Content-Type": "application/json", "X-User-Id": current_user },
+    headers: { "Content-Type": "application/json", "Authorization": "Bearer " + getToken() },
     body: JSON.stringify({ status: "in_progress" }),
   }).catch(err => console.error("Error marcando el reto como iniciado:", err));
 
@@ -1796,7 +1822,7 @@ async function loadMoodleExercises() {
   exercisesContent.innerHTML = "<p>Cargando…</p>";
   try {
     const res = await fetch(apiUrl("/api/moodle/exercises"), {
-      headers: { "X-User-Id": current_user }
+      headers: { "Authorization": "Bearer " + getToken() }
     });
     if (res.status === 503) {
       exercisesContent.innerHTML = "<p>La integración con Moodle no está configurada todavía.</p>";
@@ -1884,7 +1910,7 @@ async function loadSpecificSession(sessionId) {
 
   try {
     const res = await fetch(apiUrl(`/api/history/${sessionId}`), {
-      headers: { "X-User-Id": current_user }
+      headers: { "Authorization": "Bearer " + getToken() }
     });
     const messages = await res.json();
 
@@ -1931,7 +1957,7 @@ async function deleteSession(sessionId) {
   try {
     const res = await fetch(apiUrl(`/api/history/${sessionId}`), {
       method: "DELETE",
-      headers: { "X-User-Id": current_user }
+      headers: { "Authorization": "Bearer " + getToken() }
     });
     if (!res.ok) throw new Error(`Error ${res.status}`);
 
@@ -1970,7 +1996,7 @@ async function loadTeacherDashboard() {
 
   try {
     const res = await fetch(apiUrl("/api/teacher/summary"), {
-      headers: { "X-User-Id": current_user }
+      headers: { "Authorization": "Bearer " + getToken() }
     });
     if (res.status === 403) {
       if (tbody) tbody.innerHTML = "<tr><td colspan=\"5\">⛔ Acceso restringido solo a profesores.</td></tr>";
@@ -2131,7 +2157,7 @@ async function submitResetPassword(studentId, studentName) {
     // Ruta relativa: funciona igual en local y desplegado en Render.
     const res = await fetch(apiUrl("/api/teacher/reset-password"), {
       method: "POST",
-      headers: { "Content-Type": "application/json", "X-User-Id": current_user },
+      headers: { "Content-Type": "application/json", "Authorization": "Bearer " + getToken() },
       body: JSON.stringify({ student_id: studentId, new_password: newPassword }),
     });
     const data = await res.json().catch(() => ({}));
@@ -2183,7 +2209,7 @@ async function submitMoodleCourse(studentId, studentName) {
   try {
     const res = await fetch(apiUrl("/api/teacher/set-moodle-course"), {
       method: "POST",
-      headers: { "Content-Type": "application/json", "X-User-Id": current_user },
+      headers: { "Content-Type": "application/json", "Authorization": "Bearer " + getToken() },
       body: JSON.stringify({ student_id: studentId, moodle_course_id: courseId }),
     });
     const data = await res.json().catch(() => ({}));
@@ -2339,9 +2365,9 @@ async function viewStudentHistory(studentId, studentName) {
   historyView.innerHTML = `<p>Cargando datos de ${studentName}…</p>`;
 
   const [exercisesResult, historyResult] = await Promise.allSettled([
-    fetch(apiUrl(`/api/teacher/exercises/${studentId}`), { headers: { "X-User-Id": current_user } })
+    fetch(apiUrl(`/api/teacher/exercises/${studentId}`), { headers: { "Authorization": "Bearer " + getToken() } })
       .then(res => { if (!res.ok) throw new Error(`Error ${res.status}`); return res.json(); }),
-    fetch(apiUrl(`/api/teacher/history/${studentId}`), { headers: { "X-User-Id": current_user } })
+    fetch(apiUrl(`/api/teacher/history/${studentId}`), { headers: { "Authorization": "Bearer " + getToken() } })
       .then(res => { if (!res.ok) throw new Error(`Error ${res.status}`); return res.json(); }),
   ]);
 
@@ -2409,7 +2435,7 @@ async function viewStudentSession(sessionId, studentName) {
 
   try {
     const res = await fetch(apiUrl(`/api/history/${sessionId}`), {
-      headers: { "X-User-Id": current_user }
+      headers: { "Authorization": "Bearer " + getToken() }
     });
     if (!res.ok) throw new Error(`Error ${res.status}`);
     const messages = await res.json();
@@ -2475,7 +2501,7 @@ if (assignTaskForm) {
     try {
       const res = await fetch(apiUrl("/api/exercises"), {
         method: "POST",
-        headers: { "Content-Type": "application/json", "X-User-Id": current_user },
+        headers: { "Content-Type": "application/json", "Authorization": "Bearer " + getToken() },
         body: JSON.stringify({
           title,
           type,
@@ -2521,7 +2547,7 @@ if (createStudentForm) {
       // Ruta relativa: funciona igual en local y desplegado en Render.
       const res = await fetch(apiUrl("/api/teacher/create-student"), {
         method: "POST",
-        headers: { "Content-Type": "application/json", "X-User-Id": current_user },
+        headers: { "Content-Type": "application/json", "Authorization": "Bearer " + getToken() },
         body: JSON.stringify({ username: newUsername, password: newPassword }),
       });
       const data = await res.json().catch(() => ({}));
