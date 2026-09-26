@@ -2,3 +2,8 @@
 venv/
 __pycache__/
 .obsidian/
+
+# Solo en local: documentación interna y páginas/tests de desarrollo
+resumen.md
+frontend/avatar3d-preview.html
+frontend/*.test.mjs
