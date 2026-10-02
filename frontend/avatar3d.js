@@ -249,10 +249,13 @@ const CLASP_REF_BONE = "Spine";
 const CLASP_POSE = {
   // Mano de fuera: cruza la línea media y se apoya sobre la otra, palma
   // hacia el cuerpo; dedos recogidos rodeándola, pulgar por debajo.
-  outer: { wrist: [0.02, 0.1, 0.2], pronation: 55, flex: 10, deviation: 5, curl: [25, 35, 22], thumb: [15, 20, 10] },
-  // Mano de dentro: casi de canto (poca pronación), relajada y medio
-  // cerrada bajo la de fuera.
-  inner: { wrist: [0.075, 0.075, 0.18], pronation: 15, flex: 15, deviation: 10, curl: [30, 40, 25], thumb: [10, 15, 10] },
+  // 2026-10-01: menos torsión y flexión (antes 55°/10°/5°): la muñeca
+  // quedaba muy doblada hacia abajo.
+  outer: { wrist: [0.035, 0.1, 0.21], pronation: 42, flex: 5, deviation: 3, curl: [25, 35, 22], thumb: [15, 20, 10] },
+  // Mano de dentro: algo girada (no del todo de canto) para que la palma
+  // apoye plana bajo los dedos de la otra; relajada y medio cerrada.
+  // 2026-10-01: antes pronation 15, flex 15, deviation 10, curl [30,40,25].
+  inner: { wrist: [0.095, 0.075, 0.19], pronation: 28, flex: 8, deviation: 6, curl: [25, 35, 22], thumb: [10, 15, 10] },
 };
 // Pose intermedia del cambio de mano: las dos de canto, separadas y algo
 // adelantadas (en el punto medio solo se rozan las yemas): así una no
@@ -266,27 +269,39 @@ const CLASP_SWAP_MID = { wrist: [0.13, 0.1, 0.23], pronation: 25, flex: 0, devia
 // Hacia dónde abre el codo (fuera y atrás, algo abajo), lado izquierdo; X
 // se refleja. Codos pegados al costado y algo por detrás: brazos caídos,
 // no "ofreciendo" las manos. (Se probó [0.4, -0.2, -1] con las manos más
-// adelantadas y el cliente lo vio peor: se descartó.)
-const CLASP_ELBOW_POLE = [1, -0.2, -0.9];
+// adelantadas y el cliente lo vio peor: se descartó.) 2026-10-01: algo más
+// hacia fuera (antes [1, -0.2, -0.9]) junto con las muñecas más separadas,
+// porque los brazos pegados al tronco se veían comprimidos.
+const CLASP_ELBOW_POLE = [1.4, -0.2, -0.75];
 // Parte de la pronación que lleva el antebrazo (se retuerce el codo); el
 // resto la lleva la mano (se retuerce la muñeca). Repartida, ninguna de las
 // dos articulaciones pasa de ~28° de giro.
 const FOREARM_TWIST_SHARE = 0.5;
-// Clavículas algo caídas y adelantadas: quita el aire "encogido" que deja
-// bajar los brazos desde una T-pose.
-const SHOULDER_DROP_DEG = 4;
-const SHOULDER_FORWARD_DEG = 3;
+// Clavículas caídas y un poco hacia atrás: quita el aire "encogido" que deja
+// bajar los brazos desde una T-pose y abre el pecho (2026-10-01: antes 4° y
+// 3° hacia DELANTE, que cerraba los hombros).
+const SHOULDER_DROP_DEG = 6;
+const SHOULDER_FORWARD_DEG = -2;
 const HAND_SWAP_MIN_SECONDS = 18;        // cada cuánto cambia la mano de fuera (al azar en el rango)
 const HAND_SWAP_MAX_SECONDS = 32;
 const HAND_SWAP_DURATION_SECONDS = 2.6;  // muy lento: se lee como un reajuste, no como un gesto
 // Respiración: ~13 respiraciones/min, amplitudes de pocos grados
-// (tercera calibración, 2026-09-25: con 1.2°/2.0° el cliente pidió que se
-// notara un poco más).
-const BREATH_PERIOD_SECONDS = 4.6;
-const BREATH_CHEST_DEG = 2.0;            // Spine1/Spine2 se abren un poco hacia atrás
-const BREATH_SHOULDER_DEG = 3.0;         // los hombros suben al inspirar
+// (cuarta calibración, 2026-10-02: más orgánica y algo más visible; antes
+// una coseno idéntica en cada ciclo, 2.0°/3.0°/6 mm, todo a la vez).
+// Ciclo asimétrico como el de verdad: inspiración activa más corta,
+// espiración pasiva más larga y una pausa breve al final; cada ciclo varía
+// un poco de duración y profundidad, y los hombros (y las manos con ellos)
+// siguen al pecho con un pequeño retraso en vez de moverse en bloque.
+const BREATH_PERIOD_SECONDS = 4.6;       // duración media del ciclo
+const BREATH_PERIOD_JITTER = 0.1;        // ±10% de duración, sorteado en cada ciclo
+const BREATH_DEPTH_JITTER = 0.1;         // ±10% de profundidad, sorteado en cada ciclo
+const BREATH_INHALE_SHARE = 0.4;         // parte del ciclo inspirando
+const BREATH_EXHALE_SHARE = 0.48;        // parte espirando; el resto (~0.55 s) es la pausa
+const BREATH_SHOULDER_LAG_SECONDS = 0.25; // retraso de hombros/manos respecto al pecho
+const BREATH_CHEST_DEG = 2.4;            // Spine1/Spine2 se abren un poco hacia atrás
+const BREATH_SHOULDER_DEG = 3.5;         // los hombros suben al inspirar (~8 mm)
 const BREATH_NECK_COMPENSATION = 0.8;    // el cuello deshace casi todo: la cabeza no cabecea
-const BREATH_HANDS_LIFT = 0.006;         // metros: las manos suben un pelo al inspirar (quietas del todo parecen clavadas)
+const BREATH_HANDS_LIFT = 0.007;         // metros: las manos suben un pelo al inspirar, con los hombros (quietas del todo parecen clavadas)
 // Cabeza en reposo: mientras NO habla, cada HEAD_IDLE_MIN..MAX s gira un
 // poco la cabeza hacia un lado (con una leve inclinación hacia ese mismo
 // lado), la mantiene HEAD_HOLD_MIN..MAX s y vuelve al frente. Al empezar a
@@ -1021,13 +1036,15 @@ function buildPresenter(root) {
 
   // Respiración + caída de hombros: eje en espacio MUNDO pasado a local de
   // cada hueso (en bind), para aplicarlo cada frame sin recalcular matrices.
+  // `lagged`: el hueso sigue la señal retrasada (hombros) en vez de la del
+  // pecho.
   const breath = [];
-  const addBone = (name, parts) => {
+  const addBone = (name, parts, lagged = false) => {
     const b = findBone(root, name);
     if (!b) return;
     const inv = worldQuat(b).invert();
     const local = (w) => w.clone().applyQuaternion(inv).normalize();
-    breath.push({ bone: b, rest: b.quaternion.clone(), parts: parts.map(([axis, fixedDeg, breathDeg]) => ({ axis: local(axis), fixed: deg(fixedDeg), breath: deg(breathDeg) })) });
+    breath.push({ bone: b, rest: b.quaternion.clone(), lagged, parts: parts.map(([axis, fixedDeg, breathDeg]) => ({ axis: local(axis), fixed: deg(fixedDeg), breath: deg(breathDeg) })) });
   };
   const X = new THREE.Vector3(1, 0, 0);
   const Y = new THREE.Vector3(0, 1, 0);
@@ -1038,8 +1055,8 @@ function buildPresenter(root) {
   addBone("Neck", [[X, 0, BREATH_CHEST_DEG * BREATH_NECK_COMPENSATION]]);
   // Hombro izquierdo (+X) sube girando en +Z y va hacia delante girando en
   // -Y; el derecho, al revés.
-  addBone("LeftShoulder", [[Z, -SHOULDER_DROP_DEG, BREATH_SHOULDER_DEG], [Y, -SHOULDER_FORWARD_DEG, 0]]);
-  addBone("RightShoulder", [[Z, SHOULDER_DROP_DEG, -BREATH_SHOULDER_DEG], [Y, SHOULDER_FORWARD_DEG, 0]]);
+  addBone("LeftShoulder", [[Z, -SHOULDER_DROP_DEG, BREATH_SHOULDER_DEG], [Y, -SHOULDER_FORWARD_DEG, 0]], true);
+  addBone("RightShoulder", [[Z, SHOULDER_DROP_DEG, -BREATH_SHOULDER_DEG], [Y, SHOULDER_FORWARD_DEG, 0]], true);
 
   // Cabeza: mismos ejes mundo -> local, aplicados cada frame sobre su pose
   // de reposo (ver updatePresenterHead).
@@ -1058,6 +1075,10 @@ function buildPresenter(root) {
   const top = Math.random() < 0.5 ? 1 : -1;
   return {
     ref, arms: [left, right], breath, head,
+    breathPhase: 0,   // 0..1 dentro del ciclo actual
+    breathPeriod: BREATH_PERIOD_SECONDS,
+    breathDepth: 1,
+    breathLagged: 0,  // señal de hombros/manos (sigue a la del pecho con retraso)
     top,              // lado de la mano de fuera ahora (o hacia la que se va): 1 izquierda, -1 derecha
     from: top,        // mano de fuera al empezar el cambio en curso
     swapT: 1,         // progreso del cambio (1 = quieto)
@@ -1112,6 +1133,16 @@ function lerpPose(a, b, t) {
 
 const _qBreath = new THREE.Quaternion();
 
+// Forma de un ciclo de respiración (phase 0..1 -> 0..1): sube con media
+// coseno durante la inspiración, baja igual durante la espiración (más
+// larga) y se queda en 0 la pausa final. Pendiente nula en cada unión, así
+// que no hay esquinas; lo que la hace orgánica es la asimetría y la pausa.
+function breathShape(phase) {
+  if (phase < BREATH_INHALE_SHARE) return 0.5 - 0.5 * Math.cos(Math.PI * phase / BREATH_INHALE_SHARE);
+  const u = (phase - BREATH_INHALE_SHARE) / BREATH_EXHALE_SHARE;
+  return u >= 1 ? 0 : 0.5 + 0.5 * Math.cos(Math.PI * u);
+}
+
 // Por frame: respiración, luego las dos manos por IK (con el cambio de mano
 // si toca).
 function updatePresenterBody(dt) {
@@ -1127,12 +1158,20 @@ function updatePresenterBody(dt) {
   }
   if (p.swapT < 1) p.swapT = Math.min(1, p.swapT + dt / HAND_SWAP_DURATION_SECONDS);
 
-  // Respiración: 0..1, inspiración algo más corta que la espiración.
-  const phase = (runningSeconds % BREATH_PERIOD_SECONDS) / BREATH_PERIOD_SECONDS;
-  const breath = Math.pow(0.5 - 0.5 * Math.cos(2 * Math.PI * phase), 1.3);
+  // Respiración: 0..1. Al cerrar un ciclo (en la pausa, con la señal a 0:
+  // sin saltos) se sortean la duración y la profundidad del siguiente.
+  p.breathPhase += dt / p.breathPeriod;
+  if (p.breathPhase >= 1) {
+    p.breathPhase %= 1;
+    p.breathPeriod = BREATH_PERIOD_SECONDS * (1 + randomBetween(-1, 1) * BREATH_PERIOD_JITTER);
+    p.breathDepth = 1 + randomBetween(-1, 1) * BREATH_DEPTH_JITTER;
+  }
+  const breath = breathShape(p.breathPhase) * p.breathDepth;
+  p.breathLagged += (breath - p.breathLagged) * (1 - Math.exp(-dt / BREATH_SHOULDER_LAG_SECONDS));
   for (const b of p.breath) {
+    const v = b.lagged ? p.breathLagged : breath;
     b.bone.quaternion.copy(b.rest);
-    for (const part of b.parts) b.bone.quaternion.multiply(_qBreath.setFromAxisAngle(part.axis, part.fixed + part.breath * breath));
+    for (const part of b.parts) b.bone.quaternion.multiply(_qBreath.setFromAxisAngle(part.axis, part.fixed + part.breath * v));
   }
   if (p.head) updatePresenterHead(p.head, dt);
   p.ref.parent.updateMatrixWorld(true);
@@ -1146,7 +1185,7 @@ function updatePresenterBody(dt) {
     const A = role(arm.side, p.from);
     const B = role(arm.side, p.top);
     const pose = A === B ? A : lerpPose(lerpPose(A, CLASP_SWAP_MID, t), lerpPose(CLASP_SWAP_MID, B, t), t);
-    solvePresenterArm(arm, p.ref, pose, BREATH_HANDS_LIFT * breath);
+    solvePresenterArm(arm, p.ref, pose, BREATH_HANDS_LIFT * p.breathLagged);
   }
 }
 
